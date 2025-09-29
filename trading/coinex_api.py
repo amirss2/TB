@@ -311,50 +311,66 @@ class CoinExAPI:
                     from config.settings import TRADING_CONFIG
                     return TRADING_CONFIG['training_symbols']
             
-            # Check if we have valid cached symbols
-            cached_symbols = self.symbol_cache.load_symbols()
-            if cached_symbols:
-                self.logger.info(f"Using {len(cached_symbols)} cached symbols (still valid)")
-                return cached_symbols
-            
-            # Fetch fresh data from CoinMarketCap and CoinEx
-            self.logger.info(f"Fetching fresh top {limit} symbols from CoinMarketCap...")
-            
-            from utils.coinmarketcap_api import CoinMarketCapAPI
-            
-            # Get top cryptocurrencies from CoinMarketCap
-            cmc_api = CoinMarketCapAPI()
-            top_cryptos = cmc_api.get_top_cryptocurrencies(limit)
-            
-            # Convert to trading pair symbols
-            cmc_symbols = cmc_api.extract_symbols(top_cryptos, 'USDT')
-            
-            # Check which ones are available on CoinEx
-            available_symbols = self.get_available_symbols_from_list(cmc_symbols)
-            
-            # Cache the symbols for future use
-            cache_metadata = {
-                'source': 'coinmarketcap',
-                'original_limit': limit,
-                'cmc_symbols_count': len(cmc_symbols),
-                'coinex_available_count': len(available_symbols)
-            }
-            self.symbol_cache.save_symbols(available_symbols, cache_metadata)
-            
-            self.logger.info(f"CoinMarketCap integration: {len(available_symbols)} symbols available on CoinEx from top {limit}")
-            return available_symbols
+            # Try to fetch fresh data first, then fall back to cache if needed
+            try:
+                # Check if we have valid cached symbols (but still try to refresh)
+                cached_symbols = self.symbol_cache.load_symbols()
+                if cached_symbols:
+                    self.logger.info(f"Found {len(cached_symbols)} cached symbols, will try to refresh")
+                
+                # Fetch fresh data from CoinMarketCap and CoinEx
+                self.logger.info(f"Fetching fresh top {limit} symbols from CoinMarketCap...")
+                
+                from utils.coinmarketcap_api import CoinMarketCapAPI
+                
+                # Get top cryptocurrencies from CoinMarketCap
+                cmc_api = CoinMarketCapAPI()
+                top_cryptos = cmc_api.get_top_cryptocurrencies(limit)
+                
+                # Convert to trading pair symbols
+                cmc_symbols = cmc_api.extract_symbols(top_cryptos, 'USDT')
+                
+                # Check which ones are available on CoinEx
+                available_symbols = self.get_available_symbols_from_list(cmc_symbols)
+                
+                if available_symbols and len(available_symbols) > 0:
+                    # Cache the symbols for future use
+                    cache_metadata = {
+                        'source': 'coinmarketcap',
+                        'original_limit': limit,
+                        'cmc_symbols_count': len(cmc_symbols),
+                        'coinex_available_count': len(available_symbols)
+                    }
+                    self.symbol_cache.save_symbols(available_symbols, cache_metadata)
+                    
+                    self.logger.info(f"CoinMarketCap integration: {len(available_symbols)} symbols available on CoinEx from top {limit}")
+                    return available_symbols
+                else:
+                    # If fresh fetch failed but we have cache, use cache
+                    if cached_symbols:
+                        self.logger.warning(f"Fresh fetch failed, using {len(cached_symbols)} cached symbols")
+                        return cached_symbols
+                    else:
+                        self.logger.error("No fresh symbols and no cache available")
+                        raise Exception("No symbols available from fresh fetch or cache")
+                
+            except Exception as api_error:
+                self.logger.error(f"API error during symbol fetch: {api_error}")
+                
+                # Try to load from cache as fallback
+                cached_symbols = self.symbol_cache.load_symbols(max_age_hours=72)  # Accept older cache in emergency
+                if cached_symbols:
+                    self.logger.info(f"API failed, using {len(cached_symbols)} symbols from backup cache")
+                    return cached_symbols
+                else:
+                    self.logger.error("No cached symbols available after API failure")
+                    raise api_error
             
         except Exception as e:
             self.logger.error(f"Error getting CoinMarketCap symbols: {e}")
             
-            # Try to load from cache as fallback
-            cached_symbols = self.symbol_cache.load_symbols(max_age_hours=72)  # Accept older cache in emergency
-            if cached_symbols:
-                self.logger.info(f"Using {len(cached_symbols)} symbols from backup cache")
-                return cached_symbols
-            
             # Final fallback to training symbols
-            self.logger.warning("All fallbacks failed, using training symbols")
+            self.logger.warning("All symbol fetch methods failed, using training symbols")
             from config.settings import TRADING_CONFIG
             return TRADING_CONFIG['training_symbols']
     

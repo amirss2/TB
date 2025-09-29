@@ -106,7 +106,7 @@ WEB_CONFIG = {
 
 # Data Update Configuration
 DATA_CONFIG = {
-    'update_interval': 5,  # Update every 5 seconds for real-time price updates
+    'update_interval': 30,  # Update every 30 seconds to avoid API rate limits
     'batch_size': 3,  # Fetch last 3 candles for real-time updates
     'max_retries': 3,
     'timeout': 30,
@@ -115,7 +115,7 @@ DATA_CONFIG = {
     'max_4h_training_candles': 0,  # Maximum candles for full training (0 or None means use all)
     'use_all_history': True,  # When True, fetch ALL historical data without limits
     'real_time_fetch_limit': 3,  # Number of latest candles to fetch for real-time updates
-    'real_time_min_interval': 1,  # Minimum 1 second between real-time updates per symbol
+    'real_time_min_interval': 10,  # Minimum 10 seconds between updates per symbol to avoid rate limits
 }
 
 # Logging Configuration

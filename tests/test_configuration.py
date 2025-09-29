@@ -45,9 +45,9 @@ class TestConfiguration(unittest.TestCase):
     
     def test_real_time_data_config(self):
         """Test real-time data fetching configuration"""
-        self.assertEqual(DATA_CONFIG['update_interval'], 5)
+        self.assertEqual(DATA_CONFIG['update_interval'], 30)  # Updated to 30 seconds
         self.assertEqual(DATA_CONFIG['real_time_fetch_limit'], 3)
-        self.assertEqual(DATA_CONFIG['real_time_min_interval'], 1)
+        self.assertEqual(DATA_CONFIG['real_time_min_interval'], 10)  # Updated to 10 seconds
         self.assertEqual(DATA_CONFIG['batch_size'], 3)
     
     def test_coinmarketcap_integration(self):

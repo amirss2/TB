@@ -39,25 +39,35 @@ class DataFetcher:
         self.latest_prices = {}
         self.latest_data_cache = {}
         
-        # Throttling for data fetch spam prevention - more aggressive for real-time
+        # Throttling for data fetch spam prevention - more conservative for API stability
         self.last_fetch_times = {}  # symbol -> timestamp
-        self.min_fetch_interval = get_config_value('data.real_time_min_interval', 1)  # 1 second for real-time
+        self.min_fetch_interval = get_config_value('data.real_time_min_interval', 10)  # 10 seconds for API stability
         
         # Real-time update configuration
         self.real_time_fetch_limit = DATA_CONFIG.get('real_time_fetch_limit', 3)
         
         # Initialize analysis symbols (using cache)
+        self.logger.info("Initializing analysis symbols...")
         self._update_analysis_symbols()
         
         self.logger.info(f"Data fetcher initialized with {len(self.training_symbols)} training symbols and {len(self.analysis_symbols)} analysis symbols")
+        
+        # Log details for debugging
+        if len(self.analysis_symbols) > len(self.training_symbols):
+            self.logger.info(f"✅ Successfully loaded {len(self.analysis_symbols)} symbols for analysis")
+        else:
+            self.logger.warning(f"⚠️  Only using {len(self.analysis_symbols)} symbols (expected more from CoinMarketCap cache)")
     
     def _update_analysis_symbols(self):
         """Update the list of analysis symbols from CoinMarketCap top cryptocurrencies available on CoinEx"""
         try:
             if self.use_coinmarketcap_symbols:
                 self.logger.info(f"Fetching top {self.coinmarketcap_limit} cryptocurrencies from CoinMarketCap...")
+                
+                # Try to get symbols with cache support
                 cmc_symbols = self.api.get_coinmarketcap_available_symbols(limit=self.coinmarketcap_limit)
-                if cmc_symbols:
+                
+                if cmc_symbols and len(cmc_symbols) > len(self.training_symbols):
                     self.analysis_symbols = cmc_symbols
                     self.logger.info(f"Updated analysis symbols with {len(self.analysis_symbols)} CoinMarketCap symbols available on CoinEx")
                     
@@ -66,7 +76,7 @@ class DataFetcher:
                 else:
                     # Fallback to training symbols
                     self.analysis_symbols = self.training_symbols.copy()
-                    self.logger.warning("Failed to get CoinMarketCap symbols, falling back to training symbols")
+                    self.logger.warning(f"Failed to get sufficient CoinMarketCap symbols (got {len(cmc_symbols) if cmc_symbols else 0}), falling back to training symbols")
             else:
                 # Use training symbols for analysis if CoinMarketCap integration disabled
                 self.analysis_symbols = self.training_symbols.copy()
@@ -74,7 +84,20 @@ class DataFetcher:
                 
         except Exception as e:
             self.logger.error(f"Error updating analysis symbols: {e}")
-            self.analysis_symbols = self.training_symbols.copy()
+            # Try to load from symbol cache as emergency fallback
+            try:
+                from utils.symbol_cache import SymbolCache
+                cache = SymbolCache()
+                cached_symbols = cache.load_symbols(max_age_hours=72)  # Accept older cache in emergency
+                if cached_symbols and len(cached_symbols) > len(self.training_symbols):
+                    self.analysis_symbols = cached_symbols
+                    self.logger.info(f"Emergency fallback: using {len(cached_symbols)} cached symbols")
+                else:
+                    self.analysis_symbols = self.training_symbols.copy()
+                    self.logger.warning("No cached symbols available, using training symbols")
+            except Exception as cache_error:
+                self.logger.error(f"Cache fallback failed: {cache_error}")
+                self.analysis_symbols = self.training_symbols.copy()
     
     def get_active_symbols(self) -> List[str]:
         """Get symbols that should be actively monitored for trading/analysis"""
@@ -146,10 +169,14 @@ class DataFetcher:
                     time.sleep(10)
                     continue
                 
+                # Log symbol count for debugging
+                if len(active_symbols) != len(self.training_symbols):
+                    self.logger.info(f"Monitoring {len(active_symbols)} symbols (expanded from {len(self.training_symbols)} training symbols)")
+                
                 # Update all symbols concurrently for speed
                 self._update_symbols_concurrent(active_symbols)
                 
-                # Sleep for next iteration (fast updates every 5 seconds)
+                # Sleep for next iteration (30 seconds to respect API limits)
                 time.sleep(self.update_interval)
                 
             except Exception as e:
@@ -160,30 +187,42 @@ class DataFetcher:
         """Update multiple symbols concurrently for faster processing"""
         import concurrent.futures
         
-        max_workers = min(20, len(symbols))  # Limit concurrent connections
+        # Limit concurrent connections to avoid overwhelming the API
+        max_workers = min(5, len(symbols))  # Reduced from 20 to 5 to avoid rate limits
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all symbol updates
-            future_to_symbol = {}
+        # Process symbols in smaller batches to avoid rate limiting
+        batch_size = 10  # Process 10 symbols at a time
+        
+        for i in range(0, len(symbols), batch_size):
+            batch = symbols[i:i + batch_size]
             
-            for symbol in symbols:
-                if self._should_fetch_data(symbol):
-                    future = executor.submit(self._update_single_symbol_complete, symbol)
-                    future_to_symbol[future] = symbol
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit batch of symbol updates
+                future_to_symbol = {}
+                
+                for symbol in batch:
+                    if self._should_fetch_data(symbol):
+                        future = executor.submit(self._update_single_symbol_complete, symbol)
+                        future_to_symbol[future] = symbol
+                
+                # Collect results
+                completed_count = 0
+                for future in concurrent.futures.as_completed(future_to_symbol, timeout=30):
+                    symbol = future_to_symbol[future]
+                    try:
+                        future.result()
+                        self._record_fetch_time(symbol)
+                        completed_count += 1
+                    except Exception as e:
+                        self.logger.error(f"Error updating {symbol}: {e}")
+                
+                if completed_count > 0:
+                    self.logger.debug(f"Updated {completed_count}/{len(batch)} symbols in batch")
             
-            # Collect results
-            completed_count = 0
-            for future in concurrent.futures.as_completed(future_to_symbol, timeout=30):
-                symbol = future_to_symbol[future]
-                try:
-                    future.result()
-                    self._record_fetch_time(symbol)
-                    completed_count += 1
-                except Exception as e:
-                    self.logger.error(f"Error updating {symbol}: {e}")
-            
-            if completed_count > 0:
-                self.logger.debug(f"Updated {completed_count}/{len(symbols)} symbols")
+            # Add delay between batches to respect rate limits
+            if i + batch_size < len(symbols):
+                import time
+                time.sleep(2)  # 2 second delay between batches
     
     def _update_single_symbol_complete(self, symbol: str):
         """Complete update for a single symbol - both price and recent candles"""
