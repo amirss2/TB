@@ -1,0 +1,269 @@
+# Example Logging Configuration for TB Trading Bot
+# This is a template for future standardized JSON line logging
+# Not enforced yet - provided as a reference for implementation
+
+# Main logging configuration
+logging:
+  version: 1
+  disable_existing_loggers: false
+  
+  # Formatters define how log messages are structured
+  formatters:
+    # Standard text formatter for console/file output
+    standard:
+      format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+      datefmt: "%Y-%m-%d %H:%M:%S"
+    
+    # JSON formatter for structured logging (recommended for production)
+    json:
+      class: "utils.logging.JSONFormatter"
+      ensure_ascii: true
+    
+    # Safe formatter with emoji stripping for Windows compatibility
+    safe:
+      class: "utils.logging.SafeFormatter"
+      format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+      emoji_strip: true
+  
+  # Handlers define where log messages go
+  handlers:
+    # Console output
+    console:
+      class: logging.StreamHandler
+      level: INFO
+      formatter: safe
+      stream: ext://sys.stdout
+    
+    # Main log file with rotation
+    file:
+      class: logging.handlers.RotatingFileHandler
+      level: DEBUG
+      formatter: json  # Use JSON for structured logging
+      filename: logs/trading_bot.log
+      maxBytes: 10485760  # 10MB
+      backupCount: 5
+      encoding: utf8
+    
+    # Error-only log file
+    error_file:
+      class: logging.handlers.RotatingFileHandler
+      level: ERROR
+      formatter: json
+      filename: logs/errors.log
+      maxBytes: 5242880  # 5MB
+      backupCount: 3
+      encoding: utf8
+    
+    # Trading events log (structured JSON)
+    trading_events:
+      class: logging.handlers.RotatingFileHandler
+      level: INFO
+      formatter: json
+      filename: logs/trading_events.log
+      maxBytes: 20971520  # 20MB
+      backupCount: 10
+      encoding: utf8
+    
+    # ML/AI model events
+    ml_events:
+      class: logging.handlers.RotatingFileHandler
+      level: INFO
+      formatter: json
+      filename: logs/ml_events.log
+      maxBytes: 10485760  # 10MB
+      backupCount: 5
+      encoding: utf8
+  
+  # Loggers define logging behavior for specific modules
+  loggers:
+    # Trading engine logger
+    trading:
+      level: INFO
+      handlers: [console, file, trading_events]
+      propagate: false
+    
+    # ML/AI logger
+    ml:
+      level: INFO
+      handlers: [console, file, ml_events]
+      propagate: false
+    
+    # Data fetcher logger
+    data:
+      level: INFO
+      handlers: [console, file]
+      propagate: false
+    
+    # API client logger
+    api:
+      level: WARNING
+      handlers: [console, file]
+      propagate: false
+    
+    # Web interface logger
+    web:
+      level: INFO
+      handlers: [console, file]
+      propagate: false
+    
+    # Indicators calculator (can be noisy)
+    indicators:
+      level: WARNING
+      handlers: [file]
+      propagate: false
+    
+    # External libraries (reduce noise)
+    requests:
+      level: WARNING
+      handlers: [file]
+      propagate: false
+    
+    urllib3:
+      level: WARNING
+      handlers: [file]
+      propagate: false
+    
+    werkzeug:
+      level: WARNING
+      handlers: [file]
+      propagate: false
+  
+  # Root logger configuration
+  root:
+    level: INFO
+    handlers: [console, file, error_file]
+
+# Custom configuration for TB Trading Bot
+tb_logging:
+  # Enable structured JSON logging for production
+  structured_json: true
+  
+  # Emoji handling for Windows compatibility
+  emoji_strip: true
+  
+  # File rotation settings
+  max_size_mb: 10
+  backup_count: 5
+  
+  # Log level per environment
+  environments:
+    development:
+      level: DEBUG
+      console_level: INFO
+    
+    production:
+      level: INFO
+      console_level: WARNING
+    
+    demo:
+      level: INFO
+      console_level: INFO
+  
+  # Custom log event types for TB system
+  event_types:
+    # Trading events
+    trading:
+      - signal_generated
+      - position_opened
+      - position_closed
+      - stop_loss_triggered
+      - take_profit_hit
+      - risk_limit_reached
+      - demo_trade_executed
+    
+    # ML/AI events
+    ml:
+      - model_training_started
+      - model_training_completed
+      - feature_selection_completed
+      - prediction_generated
+      - model_validation_completed
+      - hyperparameter_optimization
+    
+    # System events
+    system:
+      - application_started
+      - application_stopped
+      - database_connected
+      - api_connection_established
+      - web_interface_started
+      - health_check_passed
+      - health_check_failed
+    
+    # Data events
+    data:
+      - historical_data_updated
+      - real_time_data_received
+      - market_data_gap_detected
+      - data_quality_issue
+    
+    # Error events
+    error:
+      - api_connection_failed
+      - database_error
+      - calculation_error
+      - unexpected_exception
+
+# Performance monitoring
+monitoring:
+  # Enable performance metrics logging
+  enable_metrics: true
+  
+  # Metrics collection interval (seconds)
+  metrics_interval: 60
+  
+  # Performance thresholds for alerts
+  thresholds:
+    prediction_latency_ms: 1000
+    data_fetch_latency_ms: 5000
+    memory_usage_mb: 1024
+    cpu_usage_percent: 80
+  
+  # Custom metrics to track
+  custom_metrics:
+    - signal_generation_rate
+    - prediction_accuracy
+    - api_response_times
+    - database_query_times
+    - active_positions_count
+    - daily_profit_loss
+
+# Security and privacy
+security:
+  # Mask sensitive information in logs
+  mask_sensitive_data: true
+  
+  # Fields to mask/redact
+  sensitive_fields:
+    - api_key
+    - api_secret
+    - password
+    - access_token
+    - private_key
+    - balance
+    - wallet_address
+  
+  # Log retention policy
+  retention:
+    # Keep logs for 30 days
+    days: 30
+    
+    # Archive older logs
+    archive: true
+    
+    # Compress archived logs
+    compress: true
+
+# Future enhancements (not implemented yet)
+future_features:
+  # Centralized logging (ELK stack, etc.)
+  centralized_logging: false
+  
+  # Real-time log streaming
+  log_streaming: false
+  
+  # Advanced log analysis
+  log_analytics: false
+  
+  # Integration with monitoring tools
+  monitoring_integration: false

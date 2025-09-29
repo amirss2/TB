@@ -1,0 +1,198 @@
+Indicator,Category,Required Inputs,Formula / Calculation,Must Keep (Not in RFE),RFE Eligible,Prerequisite For,Parameters,Outputs
+Prev Close,Prereq,close,Previous close (lag 1),No,Yes,"Returns, RSI, ATR",lag=1,
+Prev High,Prereq,high,Previous high (lag 1),No,Yes,"ATR, True Range",lag=1,
+Prev Low,Prereq,low,Previous low (lag 1),No,Yes,"ATR, True Range",lag=1,
+Typical Price (TP),Prereq,"high, low, close",TP = (High+Low+Close)/3,No,Yes,"VWAP, Keltner",,
+Median Price (MP),Prereq,"high, low",MP = (High+Low)/2,No,Yes,SuperTrend,,
+HLC3,Prereq,"high, low, close",HLC3 = (High+Low+Close)/3,No,Yes,Various channels,,
+OHLC4,Prereq,"open, high, low, close",OHLC4 = (Open+High+Low+Close)/4,No,Yes,Smoothers,,
+Ichimoku_Tenkan,Trend,"high, low",Tenkan=(HH9+LL9)/2,No,Yes,,period=9,
+Ichimoku_Kijun,Trend,"high, low",Kijun=(HH26+LL26)/2,No,Yes,,period=26,
+Ichimoku_SenkouB,Trend,"high, low",SenkouB=(HH52+LL52)/2 (shifted +26),No,Yes,Ichimoku Cloud,period=52,
+Ichimoku_Chikou,Trend,close,Chikou Span = Close shifted -26,No,Yes,,shift=26,
+Stoch_%K_5,Momentum,"high, low, close",%K=(Close-LL_n)/(HH_n-LL_n)*100,No,Yes,,period=5,
+Stoch_%K_9,Momentum,"high, low, close",%K=(Close-LL_n)/(HH_n-LL_n)*100,No,Yes,,period=9,
+Stoch_%K_14,Momentum,"high, low, close",%K=(Close-LL_n)/(HH_n-LL_n)*100,No,Yes,,period=14,
+Williams_%R_7,Momentum,"high, low, close",%R=(HH_n-Close)/(HH_n-LL_n)*-100,No,Yes,,period=7,
+Williams_%R_14,Momentum,"high, low, close",%R=(HH_n-Close)/(HH_n-LL_n)*-100,No,Yes,,period=14,
+Williams_%R_20,Momentum,"high, low, close",%R=(HH_n-Close)/(HH_n-LL_n)*-100,No,Yes,,period=20,
+ROC_1,Momentum,close,ROC=(Close-Close_1)/Close_1*100,No,Yes,,period=1,
+ROC_2,Momentum,close,ROC=(Close-Close_2)/Close_2*100,No,Yes,,period=2,
+ROC_3,Momentum,close,ROC=(Close-Close_3)/Close_3*100,No,Yes,,period=3,
+ROC_5,Momentum,close,ROC=(Close-Close_5)/Close_5*100,No,Yes,,period=5,
+ROC_7,Momentum,close,ROC=(Close-Close_7)/Close_7*100,No,Yes,,period=7,
+ROC_9,Momentum,close,ROC=(Close-Close_9)/Close_9*100,No,Yes,,period=9,
+ROC_14,Momentum,close,ROC=(Close-Close_14)/Close_14*100,No,Yes,,period=14,
+ROC_21,Momentum,close,ROC=(Close-Close_21)/Close_21*100,No,Yes,,period=21,
+ROC_28,Momentum,close,ROC=(Close-Close_28)/Close_28*100,No,Yes,,period=28,
+MFI_10,Momentum,"high, low, close, volume",MFI=RSI-like on MoneyFlow=TP*Volume,No,Yes,,period=10,
+MFI_14,Momentum,"high, low, close, volume",MFI=RSI-like on MoneyFlow=TP*Volume,No,Yes,,period=14,
+MFI_20,Momentum,"high, low, close, volume",MFI=RSI-like on MoneyFlow=TP*Volume,No,Yes,,period=20,
+MFI_50,Momentum,"high, low, close, volume",MFI=RSI-like on MoneyFlow=TP*Volume,No,Yes,,period=50,
+Momentum_10,Momentum,close,Close - Close_n,No,Yes,,period=10,
+Momentum_20,Momentum,close,Close - Close_n,No,Yes,,period=20,
+Momentum_50,Momentum,close,Close - Close_n,No,Yes,,period=50,
+Momentum_100,Momentum,close,Close - Close_n,No,Yes,,period=100,
+Bollinger_10_x1.0,Volatility,close,"Middle=SMA(Close,n); Upper=Middle+mult*STD(Close,n); Lower=Middle-mult*STD",No,Yes,Bollinger squeeze/width,period=10;mult=1.0,"upper,middle,lower"
+Bollinger_Width_10_x1.0,Volatility,close,Width=(Upper-Lower)/Middle,No,Yes,Bollinger,period=10;mult=1.0,
+Bollinger_10_x2.0,Volatility,close,"Middle=SMA(Close,n); Upper=Middle+mult*STD(Close,n); Lower=Middle-mult*STD",No,Yes,Bollinger squeeze/width,period=10;mult=2.0,"upper,middle,lower"
+Bollinger_Width_10_x2.0,Volatility,close,Width=(Upper-Lower)/Middle,No,Yes,Bollinger,period=10;mult=2.0,
+Bollinger_10_x3.0,Volatility,close,"Middle=SMA(Close,n); Upper=Middle+mult*STD(Close,n); Lower=Middle-mult*STD",No,Yes,Bollinger squeeze/width,period=10;mult=3.0,"upper,middle,lower"
+Bollinger_Width_10_x3.0,Volatility,close,Width=(Upper-Lower)/Middle,No,Yes,Bollinger,period=10;mult=3.0,
+Bollinger_14_x1.0,Volatility,close,"Middle=SMA(Close,n); Upper=Middle+mult*STD(Close,n); Lower=Middle-mult*STD",No,Yes,Bollinger squeeze/width,period=14;mult=1.0,"upper,middle,lower"
+Bollinger_Width_14_x1.0,Volatility,close,Width=(Upper-Lower)/Middle,No,Yes,Bollinger,period=14;mult=1.0,
+Bollinger_14_x2.0,Volatility,close,"Middle=SMA(Close,n); Upper=Middle+mult*STD(Close,n); Lower=Middle-mult*STD",No,Yes,Bollinger squeeze/width,period=14;mult=2.0,"upper,middle,lower"
+Bollinger_Width_14_x2.0,Volatility,close,Width=(Upper-Lower)/Middle,No,Yes,Bollinger,period=14;mult=2.0,
+Bollinger_14_x3.0,Volatility,close,"Middle=SMA(Close,n); Upper=Middle+mult*STD(Close,n); Lower=Middle-mult*STD",No,Yes,Bollinger squeeze/width,period=14;mult=3.0,"upper,middle,lower"
+Bollinger_Width_14_x3.0,Volatility,close,Width=(Upper-Lower)/Middle,No,Yes,Bollinger,period=14;mult=3.0,
+Bollinger_20_x1.0,Volatility,close,"Middle=SMA(Close,n); Upper=Middle+mult*STD(Close,n); Lower=Middle-mult*STD",No,Yes,Bollinger squeeze/width,period=20;mult=1.0,"upper,middle,lower"
+Bollinger_Width_20_x1.0,Volatility,close,Width=(Upper-Lower)/Middle,No,Yes,Bollinger,period=20;mult=1.0,
+Bollinger_20_x2.0,Volatility,close,"Middle=SMA(Close,n); Upper=Middle+mult*STD(Close,n); Lower=Middle-mult*STD",No,Yes,Bollinger squeeze/width,period=20;mult=2.0,"upper,middle,lower"
+Bollinger_Width_20_x2.0,Volatility,close,Width=(Upper-Lower)/Middle,No,Yes,Bollinger,period=20;mult=2.0,
+Bollinger_20_x3.0,Volatility,close,"Middle=SMA(Close,n); Upper=Middle+mult*STD(Close,n); Lower=Middle-mult*STD",No,Yes,Bollinger squeeze/width,period=20;mult=3.0,"upper,middle,lower"
+Bollinger_Width_20_x3.0,Volatility,close,Width=(Upper-Lower)/Middle,No,Yes,Bollinger,period=20;mult=3.0,
+Donchian_20_Upper,Volatility,high,HH_n,No,Yes,,period=20,
+Donchian_20_Lower,Volatility,low,LL_n,No,Yes,,period=20,
+Donchian_20_Middle,Volatility,"high, low",(Upper+Lower)/2,No,Yes,Donchian,period=20,
+Donchian_55_Upper,Volatility,high,HH_n,No,Yes,,period=55,
+Donchian_55_Lower,Volatility,low,LL_n,No,Yes,,period=55,
+Donchian_55_Middle,Volatility,"high, low",(Upper+Lower)/2,No,Yes,Donchian,period=55,
+Chaikin Volatility_10,Volatility,"high, low","100*(EMA(High-Low,10)-EMA(High-Low,10)_prev)/EMA(High-Low,10)_prev",No,Yes,,period=10,
+OBV,Volume,"close, volume",Cum( sign(Close-PrevClose)*Volume ),No,Yes,,,
+CMF_10,Volume,"high, low, close, volume","CMF = Sum( MFM*Vol, n ) / Sum(Vol, n); MFM=((Close-Low)-(High-Close))/(High-Low)",No,Yes,,period=10,
+CMF_20,Volume,"high, low, close, volume","CMF = Sum( MFM*Vol, n ) / Sum(Vol, n); MFM=((Close-Low)-(High-Close))/(High-Low)",No,Yes,,period=20,
+CMF_50,Volume,"high, low, close, volume","CMF = Sum( MFM*Vol, n ) / Sum(Vol, n); MFM=((Close-Low)-(High-Close))/(High-Low)",No,Yes,,period=50,
+Accumulation/Distribution (A/D),Volume,"high, low, close, volume",Cum( MFM*Volume ),No,Yes,,,
+ForceIndex_2,Volume,"close, volume","FI= EMA( (Close-Close_prev)*Volume, n )",No,Yes,,period=2,
+ForceIndex_10,Volume,"close, volume","FI= EMA( (Close-Close_prev)*Volume, n )",No,Yes,,period=10,
+ForceIndex_20,Volume,"close, volume","FI= EMA( (Close-Close_prev)*Volume, n )",No,Yes,,period=20,
+Volume_SMA_10,Volume,volume,"SMA(Volume,n)",No,Yes,,period=10,
+Volume_SMA_20,Volume,volume,"SMA(Volume,n)",No,Yes,,period=20,
+Volume_SMA_50,Volume,volume,"SMA(Volume,n)",No,Yes,,period=50,
+Volume_EMA_10,Volume,volume,"EMA(Volume,n)",No,Yes,,period=10,
+Volume_EMA_20,Volume,volume,"EMA(Volume,n)",No,Yes,,period=20,
+Volume_EMA_50,Volume,volume,"EMA(Volume,n)",No,Yes,,period=50,
+PVI,Volume,"close, volume",If Vol_t>Vol_{t-1}: PVI_t=PVI_{t-1}*(1+ROC_Close),No,Yes,,,
+NVI,Volume,"close, volume",If Vol_t<Vol_{t-1}: NVI_t=NVI_{t-1}*(1+ROC_Close),No,Yes,,,
+EoM_1,Volume,"high, low, volume",((High+Low)/2 - (PrevHigh+PrevLow)/2) / (Volume/(High-Low)); EMA over n if n>1,No,Yes,,period=1,
+EoM_14,Volume,"high, low, volume",((High+Low)/2 - (PrevHigh+PrevLow)/2) / (Volume/(High-Low)); EMA over n if n>1,No,Yes,,period=14,
+Return_1,Price Action,close,(Close-Close_1)/Close_1,No,Yes,,horizon=1,
+LogReturn_1,Price Action,close,ln(Close/Close_1),No,Yes,,horizon=1,
+HighLowRange_1,Price Action,"high, low",HH_1-LL_1,No,Yes,,period=1,
+CloseToRange_1,Price Action,"high, low, close",(Close-LL_1)/(HH_1-LL_1),No,Yes,,period=1,
+Return_2,Price Action,close,(Close-Close_2)/Close_2,No,Yes,,horizon=2,
+LogReturn_2,Price Action,close,ln(Close/Close_2),No,Yes,,horizon=2,
+HighLowRange_2,Price Action,"high, low",HH_2-LL_2,No,Yes,,period=2,
+CloseToRange_2,Price Action,"high, low, close",(Close-LL_2)/(HH_2-LL_2),No,Yes,,period=2,
+Return_3,Price Action,close,(Close-Close_3)/Close_3,No,Yes,,horizon=3,
+LogReturn_3,Price Action,close,ln(Close/Close_3),No,Yes,,horizon=3,
+HighLowRange_3,Price Action,"high, low",HH_3-LL_3,No,Yes,,period=3,
+CloseToRange_3,Price Action,"high, low, close",(Close-LL_3)/(HH_3-LL_3),No,Yes,,period=3,
+Return_5,Price Action,close,(Close-Close_5)/Close_5,No,Yes,,horizon=5,
+LogReturn_5,Price Action,close,ln(Close/Close_5),No,Yes,,horizon=5,
+HighLowRange_5,Price Action,"high, low",HH_5-LL_5,No,Yes,,period=5,
+CloseToRange_5,Price Action,"high, low, close",(Close-LL_5)/(HH_5-LL_5),No,Yes,,period=5,
+Return_7,Price Action,close,(Close-Close_7)/Close_7,No,Yes,,horizon=7,
+LogReturn_7,Price Action,close,ln(Close/Close_7),No,Yes,,horizon=7,
+HighLowRange_7,Price Action,"high, low",HH_7-LL_7,No,Yes,,period=7,
+CloseToRange_7,Price Action,"high, low, close",(Close-LL_7)/(HH_7-LL_7),No,Yes,,period=7,
+Return_10,Price Action,close,(Close-Close_10)/Close_10,No,Yes,,horizon=10,
+LogReturn_10,Price Action,close,ln(Close/Close_10),No,Yes,,horizon=10,
+HighLowRange_10,Price Action,"high, low",HH_10-LL_10,No,Yes,,period=10,
+CloseToRange_10,Price Action,"high, low, close",(Close-LL_10)/(HH_10-LL_10),No,Yes,,period=10,
+Return_14,Price Action,close,(Close-Close_14)/Close_14,No,Yes,,horizon=14,
+LogReturn_14,Price Action,close,ln(Close/Close_14),No,Yes,,horizon=14,
+HighLowRange_14,Price Action,"high, low",HH_14-LL_14,No,Yes,,period=14,
+CloseToRange_14,Price Action,"high, low, close",(Close-LL_14)/(HH_14-LL_14),No,Yes,,period=14,
+Return_21,Price Action,close,(Close-Close_21)/Close_21,No,Yes,,horizon=21,
+LogReturn_21,Price Action,close,ln(Close/Close_21),No,Yes,,horizon=21,
+HighLowRange_21,Price Action,"high, low",HH_21-LL_21,No,Yes,,period=21,
+CloseToRange_21,Price Action,"high, low, close",(Close-LL_21)/(HH_21-LL_21),No,Yes,,period=21,
+Return_30,Price Action,close,(Close-Close_30)/Close_30,No,Yes,,horizon=30,
+LogReturn_30,Price Action,close,ln(Close/Close_30),No,Yes,,horizon=30,
+HighLowRange_30,Price Action,"high, low",HH_30-LL_30,No,Yes,,period=30,
+CloseToRange_30,Price Action,"high, low, close",(Close-LL_30)/(HH_30-LL_30),No,Yes,,period=30,
+Body,Price Action,"open, close",|Close-Open|,No,Yes,,,
+UpperWick,Price Action,"high, open, close","High-max(Open,Close)",No,Yes,,,
+LowerWick,Price Action,"low, open, close","min(Open,Close)-Low",No,Yes,,,
+BodyToRange,Price Action,"high, low, open, close",Body/(High-Low),No,Yes,,,
+UpperToLowerWick,Price Action,"high, low, open, close",UpperWick/LowerWick,No,Yes,,,
+RollingHigh_20,Price Action,high,HH_20,No,Yes,,period=20,
+RollingLow_20,Price Action,low,LL_20,No,Yes,,period=20,
+PivotPoint_20,Price Action,"high, low, close",(H+L+C)/3 over lookback n,No,Yes,,period=20,
+RollingHigh_55,Price Action,high,HH_55,No,Yes,,period=55,
+RollingLow_55,Price Action,low,LL_55,No,Yes,,period=55,
+PivotPoint_55,Price Action,"high, low, close",(H+L+C)/3 over lookback n,No,Yes,,period=55,
+RollingHigh_100,Price Action,high,HH_100,No,Yes,,period=100,
+RollingLow_100,Price Action,low,LL_100,No,Yes,,period=100,
+PivotPoint_100,Price Action,"high, low, close",(H+L+C)/3 over lookback n,No,Yes,,period=100,
+Doji,Candlestick Pattern,"open, high, low, close",Rule-based detection for Doji,No,Yes,,,flag
+DragonflyDoji,Candlestick Pattern,"open, high, low, close",Rule-based detection for DragonflyDoji,No,Yes,,,flag
+GravestoneDoji,Candlestick Pattern,"open, high, low, close",Rule-based detection for GravestoneDoji,No,Yes,,,flag
+Hammer,Candlestick Pattern,"open, high, low, close",Rule-based detection for Hammer,No,Yes,,,flag
+InvertedHammer,Candlestick Pattern,"open, high, low, close",Rule-based detection for InvertedHammer,No,Yes,,,flag
+HangingMan,Candlestick Pattern,"open, high, low, close",Rule-based detection for HangingMan,No,Yes,,,flag
+ShootingStar,Candlestick Pattern,"open, high, low, close",Rule-based detection for ShootingStar,No,Yes,,,flag
+BullishEngulfing,Candlestick Pattern,"open, high, low, close",Rule-based detection for BullishEngulfing,No,Yes,,,flag
+BearishEngulfing,Candlestick Pattern,"open, high, low, close",Rule-based detection for BearishEngulfing,No,Yes,,,flag
+Piercing,Candlestick Pattern,"open, high, low, close",Rule-based detection for Piercing,No,Yes,,,flag
+DarkCloudCover,Candlestick Pattern,"open, high, low, close",Rule-based detection for DarkCloudCover,No,Yes,,,flag
+MorningStar,Candlestick Pattern,"open, high, low, close",Rule-based detection for MorningStar,No,Yes,,,flag
+EveningStar,Candlestick Pattern,"open, high, low, close",Rule-based detection for EveningStar,No,Yes,,,flag
+HaramiBull,Candlestick Pattern,"open, high, low, close",Rule-based detection for HaramiBull,No,Yes,,,flag
+HaramiBear,Candlestick Pattern,"open, high, low, close",Rule-based detection for HaramiBear,No,Yes,,,flag
+TweezerTop,Candlestick Pattern,"open, high, low, close",Rule-based detection for TweezerTop,No,Yes,,,flag
+TweezerBottom,Candlestick Pattern,"open, high, low, close",Rule-based detection for TweezerBottom,No,Yes,,,flag
+ThreeWhiteSoldiers,Candlestick Pattern,"open, high, low, close",Rule-based detection for ThreeWhiteSoldiers,No,Yes,,,flag
+ThreeBlackCrows,Candlestick Pattern,"open, high, low, close",Rule-based detection for ThreeBlackCrows,No,Yes,,,flag
+MarubozuWhite,Candlestick Pattern,"open, high, low, close",Rule-based detection for MarubozuWhite,No,Yes,,,flag
+MarubozuBlack,Candlestick Pattern,"open, high, low, close",Rule-based detection for MarubozuBlack,No,Yes,,,flag
+SpinningTop,Candlestick Pattern,"open, high, low, close",Rule-based detection for SpinningTop,No,Yes,,,flag
+InsideBar,Candlestick Pattern,"open, high, low, close",Rule-based detection for InsideBar,No,Yes,,,flag
+OutsideBar,Candlestick Pattern,"open, high, low, close",Rule-based detection for OutsideBar,No,Yes,,,flag
+KickingBull,Candlestick Pattern,"open, high, low, close",Rule-based detection for KickingBull,No,Yes,,,flag
+KickingBear,Candlestick Pattern,"open, high, low, close",Rule-based detection for KickingBear,No,Yes,,,flag
+LinReg_Slope_20,Price Action,close,Slope of OLS y=Close vs t over n,No,Yes,,window=20,
+LinReg_Intercept_20,Price Action,close,Intercept of OLS over n,No,Yes,,window=20,
+LinReg_R2_20,Price Action,close,R^2 of OLS over n,No,Yes,,window=20,
+LinReg_Slope_50,Price Action,close,Slope of OLS y=Close vs t over n,No,Yes,,window=50,
+LinReg_Intercept_50,Price Action,close,Intercept of OLS over n,No,Yes,,window=50,
+LinReg_R2_50,Price Action,close,R^2 of OLS over n,No,Yes,,window=50,
+LinReg_Slope_100,Price Action,close,Slope of OLS y=Close vs t over n,No,Yes,,window=100,
+LinReg_Intercept_100,Price Action,close,Intercept of OLS over n,No,Yes,,window=100,
+LinReg_R2_100,Price Action,close,R^2 of OLS over n,No,Yes,,window=100,
+BillWilliams_Fractal_Up,Price Action,high,High[i-2..i+2] with center highest,No,Yes,,,flag
+BillWilliams_Fractal_Down,Price Action,low,Low[i-2..i+2] with center lowest,No,Yes,,,flag
+DPO_20,Trend,close,"DPO=Close - SMA(Close, n/2+1)",No,Yes,,period=20,
+DPO_30,Trend,close,"DPO=Close - SMA(Close, n/2+1)",No,Yes,,period=30,
+TRIX_9,Momentum,close,ROC of triple-smoothed EMA,No,Yes,,period=9,
+TRIX_15,Momentum,close,ROC of triple-smoothed EMA,No,Yes,,period=15,
+TRIX_30,Momentum,close,ROC of triple-smoothed EMA,No,Yes,,period=30,
+PPO_12_26,Momentum,close,PPO= (EMA_fast-EMA_slow)/EMA_slow *100,No,Yes,,fast=12;slow=26,
+PPO_5_35,Momentum,close,PPO= (EMA_fast-EMA_slow)/EMA_slow *100,No,Yes,,fast=5;slow=35,
+PVO_12_26,Volume,volume,PVO=(EMA_vol_fast-EMA_vol_slow)/EMA_vol_slow *100,No,Yes,,fast=12;slow=26,
+PVO_10_20,Volume,volume,PVO=(EMA_vol_fast-EMA_vol_slow)/EMA_vol_slow *100,No,Yes,,fast=10;slow=20,
+UltimateOsc_7,Momentum,"high, low, close",Weighted sums of BP/TR over 7/14/28,No,Yes,,,
+UltimateOsc_14,Momentum,"high, low, close",Weighted sums of BP/TR over 7/14/28,No,Yes,,,
+UltimateOsc_21,Momentum,"high, low, close",Weighted sums of BP/TR over 7/14/28,No,Yes,,,
+AroonUp_14,Trend,high,100*(n - periods since HH)/n,No,Yes,,period=14,
+AroonDown_14,Trend,low,100*(n - periods since LL)/n,No,Yes,,period=14,
+AroonUp_20,Trend,high,100*(n - periods since HH)/n,No,Yes,,period=20,
+AroonDown_20,Trend,low,100*(n - periods since LL)/n,No,Yes,,period=20,
+ADX_14,Trend,"high, low, close","ADX = EMA(DX, n); DX=100*|+DI - -DI|/(+DI + -DI)",No,Yes,,period=14,
+DMI_PlusDI_14,Trend,"high, low, close","+DI = 100*EMA(+DM/TR, n)",No,Yes,ADX,period=14,
+DMI_MinusDI_14,Trend,"high, low, close","-DI = 100*EMA(-DM/TR, n)",No,Yes,ADX,period=14,
+ADX_20,Trend,"high, low, close","ADX = EMA(DX, n); DX=100*|+DI - -DI|/(+DI + -DI)",No,Yes,,period=20,
+DMI_PlusDI_20,Trend,"high, low, close","+DI = 100*EMA(+DM/TR, n)",No,Yes,ADX,period=20,
+DMI_MinusDI_20,Trend,"high, low, close","-DI = 100*EMA(-DM/TR, n)",No,Yes,ADX,period=20,
+QStick_14,Momentum,"open, close","SMA(Close-Open, n)",No,Yes,,period=14,
+QStick_20,Momentum,"open, close","SMA(Close-Open, n)",No,Yes,,period=20,
+ChandeMomentumOsc_14,Momentum,close,CMO=100*(Sum(up)-Sum(down))/Sum(|delta|),No,Yes,,period=14,
+ChandeMomentumOsc_20,Momentum,close,CMO=100*(Sum(up)-Sum(down))/Sum(|delta|),No,Yes,,period=20,
+KST,Momentum,close,KST=sum of smoothed ROC at 4 lengths,No,Yes,,"roc=[10,15,20,30]",
+TSI_25_13,Momentum,close,"TSI=EMA(EMA(delta, r), r_s)/EMA(EMA(|delta|, r), r_s)",No,Yes,,r=25;s=13,
+TSI_13_7,Momentum,close,"TSI=EMA(EMA(delta, r), r_s)/EMA(EMA(|delta|, r), r_s)",No,Yes,,r=13;s=7,
+HA_Open,Price Action,"open, high, low, close",Heikin-Ashi transformation,No,Yes,Heikin-Ashi indicators,,
+HA_High,Price Action,"open, high, low, close",Heikin-Ashi transformation,No,Yes,Heikin-Ashi indicators,,
+HA_Low,Price Action,"open, high, low, close",Heikin-Ashi transformation,No,Yes,Heikin-Ashi indicators,,
+HA_Close,Price Action,"open, high, low, close",Heikin-Ashi transformation,No,Yes,Heikin-Ashi indicators,,

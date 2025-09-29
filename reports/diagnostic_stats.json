@@ -1,0 +1,30 @@
+{
+  "total_lines": 3397,
+  "counts_by_level": {
+    "INFO": 3173,
+    "WARNING": 76,
+    "ERROR": 77,
+    "DEBUG": 0
+  },
+  "api_error_lines": 161,
+  "signal_counts": {
+    "BUY": 676,
+    "SELL": 1378,
+    "HOLD": 338
+  },
+  "unique_symbols": [
+    "BTC",
+    "DOGE",
+    "ETH",
+    "SOL",
+    "USDT"
+  ],
+  "analysis_timestamp": "2025-08-24T22:31:07.926477+00:00",
+  "average_latency_ms": null,
+  "p95_latency_ms": null,
+  "max_latency_ms": null,
+  "min_latency_ms": null,
+  "earliest_timestamp": "2025-08-24T09:51:01.482000",
+  "latest_timestamp": "2025-08-24T12:31:13.358000",
+  "log_duration_hours": 2.67
+}

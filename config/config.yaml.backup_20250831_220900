@@ -1,0 +1,175 @@
+---
+# Trading Bot Configuration
+trading:
+  timeframe: "4h"
+  demo_balance: 100.0
+  confidence_threshold: 0.7  # Base threshold, will be adaptive
+  symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT"]
+  max_positions: 4
+  risk_per_trade: 0.02
+
+# Adaptive threshold configuration
+adaptive_threshold:
+  enabled: true
+  target_signals_per_24h: 5  # Target 3-8 signals per day per symbol
+  min_threshold: 0.5
+  max_threshold: 0.85
+  adjustment_rate: 0.05
+  evaluation_window: 24  # hours
+
+# Take Profit / Stop Loss Configuration
+tp_sl:
+  tp1_percent: 3.0
+  tp2_percent: 5.0
+  tp3_percent: 8.0
+  initial_sl_percent: 2.0
+  trailing_enabled: true
+
+# Data source configuration with failover
+data_sources:
+  primary: "coinex"
+  secondary: "binance"
+  failover_after_failures: 3
+  timeout_seconds: 30
+  retry_count: 3
+  retry_backoff: 2.0  # exponential backoff multiplier
+
+# Data fetching configuration
+data:
+  update_interval: 60  # seconds between data updates
+  min_fetch_interval_seconds: 30  # minimum seconds between fetches for same symbol
+  max_retries: 3
+  cache_enabled: true
+
+# Machine Learning Configuration
+ml:
+  model_type: "xgboost"  # Options: xgboost, catboost
+  training_data_size: 58000
+  test_size: 0.2
+  random_state: 42
+  model_retrain_interval: 24  # hours
+  
+  # Class labeling
+  labeling:
+    up_threshold: 0.02    # 2% return for UP class
+    down_threshold: -0.02 # -2% return for DOWN class
+    # Values between thresholds = NEUTRAL
+  
+  # Class balance handling
+  class_balance:
+    method: "class_weight"  # Options: class_weight, oversample, undersample
+    max_class_ratio: 0.7   # Max ratio any single class can represent
+  
+  # Cross-validation
+  cross_validation:
+    enabled: true
+    folds: 5
+    strategy: "stratified"
+  
+  # Probability calibration
+  calibration:
+    enabled: true
+    method: "isotonic"  # Options: isotonic, platt
+
+# XGBoost specific configuration
+xgboost:
+  n_estimators: 1500
+  max_depth: 6
+  learning_rate: 0.05
+  early_stopping_rounds: 100
+  subsample: 0.8
+  colsample_bytree: 0.8
+  colsample_bylevel: 0.8  # Additional regularization
+  reg_alpha: 0.1          # L1 regularization to prevent overfitting
+  reg_lambda: 1.0         # L2 regularization to prevent overfitting
+  min_child_weight: 3     # Minimum sum of instance weight needed in a child
+  gamma: 0.1              # Minimum loss reduction required to make split
+
+# CatBoost specific configuration
+catboost:
+  iterations: 1500
+  depth: 6
+  learning_rate: 0.05
+  early_stopping_rounds: 100
+  loss_function: "MultiClass"
+  auto_class_weights: "Balanced"
+
+# Feature Selection Configuration
+feature_selection:
+  mode: "dynamic"  # Options: rfe, shap, hybrid, dynamic
+  method: "rfe"  # legacy key kept for compatibility
+  target_features: 50
+  correlation_threshold: 0.9  # Remove features with correlation > this
+  importance_threshold: 0.001  # Minimum feature importance to keep
+  
+  # Dynamic Feature Selection
+  dynamic:
+    min_features: 20
+    drop_fraction: 0.05
+    corr_threshold: 0.95
+    tolerance: 0.003
+    metric: 'macro_f1'
+    cv_splits: 3
+    max_iterations: 50
+    max_history_length: 100  # Maximum entries to keep in selection history
+  
+  # Advanced Adaptive Feature Selection (legacy)
+  adaptive:
+    enabled: false  # Set to true to enable adaptive selection (disabled for performance)
+    initial_top_k: 40  # Stage A: Keep top K candidates by importance (reduced from 80)
+    min_features: 5    # Minimum total features (including base)
+    max_features: 30   # Maximum total features (including base) (reduced from 50)
+    cv_folds: 3        # Cross-validation folds for SFFS (reduced from 5)
+    early_stopping_patience: 2     # Stop if no improvement for N rounds (reduced from 3)
+    early_stopping_epsilon: 0.005  # Minimum improvement threshold (increased from 0.002)
+    scoring_metric: "f1_macro"  # Options: balanced_accuracy, f1_macro
+    base_features: ["open", "high", "low", "close", "volume", "OHLC4"]  # Always included
+
+# Indicators Configuration
+indicators:
+  # Enhanced feature engineering
+  additional_features:
+    - "returns_1"     # 1-period returns
+    - "returns_5"     # 5-period returns
+    - "volatility_10" # 10-period realized volatility
+    - "volume_ratio"  # Volume vs 20-period average
+    - "price_zscore_20" # 20-period price z-score
+
+# Prediction Scheduler Configuration
+prediction:
+  scheduler_interval: 60  # seconds (every 1 minute)
+  intracandle_predictions: true
+  min_data_points: 200  # Minimum data points required for prediction
+
+# Signal Management
+signals:
+  persistence_enabled: true
+  websocket_broadcast: true
+  max_signals_history: 1000
+  signal_expiry_hours: 24
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/trading_bot.log"
+  max_size_mb: 10
+  backup_count: 5
+  unicode_safe: true
+  emoji_strip: true  # Strip emojis for Windows cp1252 compatibility
+  structured_json: false  # Enable for structured JSON logging
+
+# Web Dashboard Configuration
+web:
+  host: "0.0.0.0"
+  port: 5000
+  debug: false
+  websocket_enabled: true
+
+# Health Monitoring
+health:
+  check_interval: 300  # seconds (5 minutes)
+  endpoints:
+    - "/api/health"
+    - "/api/model/status"
+    - "/api/signals/recent"
