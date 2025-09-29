@@ -47,36 +47,48 @@ class DataFetcher:
         self.real_time_fetch_limit = DATA_CONFIG.get('real_time_fetch_limit', 3)
         
         # Initialize analysis symbols (using cache)
-        self.logger.info("Initializing analysis symbols...")
+        self.logger.info("🚀 Initializing symbol management system...")
         self._update_analysis_symbols()
         
-        self.logger.info(f"Data fetcher initialized with {len(self.training_symbols)} training symbols and {len(self.analysis_symbols)} analysis symbols")
+        self.logger.info(f"📊 Symbol configuration summary:")
+        self.logger.info(f"   🎓 Training symbols (for ML): {len(self.training_symbols)} symbols")
+        self.logger.info(f"   📈 Analysis symbols (for trading): {len(self.analysis_symbols)} symbols")
         
         # Log details for debugging
         if len(self.analysis_symbols) > len(self.training_symbols):
-            self.logger.info(f"✅ Successfully loaded {len(self.analysis_symbols)} symbols for analysis")
+            self.logger.info(f"✅ Successfully expanded symbol list for trading and analysis")
+            self.logger.info(f"   Training: {self.training_symbols}")
+            self.logger.info(f"   Additional analysis symbols: {len(self.analysis_symbols) - len(self.training_symbols)}")
         else:
-            self.logger.warning(f"⚠️  Only using {len(self.analysis_symbols)} symbols (expected more from CoinMarketCap cache)")
+            self.logger.warning(f"⚠️  Using minimal symbol set (training symbols only)")
+            self.logger.warning(f"   This may indicate CoinMarketCap/CoinEx integration issues")
     
     def _update_analysis_symbols(self):
         """Update the list of analysis symbols from CoinMarketCap top cryptocurrencies available on CoinEx"""
         try:
             if self.use_coinmarketcap_symbols:
-                self.logger.info(f"Fetching top {self.coinmarketcap_limit} cryptocurrencies from CoinMarketCap...")
+                self.logger.info(f"🔄 Starting symbol fetching process...")
+                self.logger.info(f"   📊 Target: Top {self.coinmarketcap_limit} from CoinMarketCap")
+                self.logger.info(f"   🎯 Training symbols (always included): {self.training_symbols}")
                 
-                # Try to get symbols with cache support
+                # Get symbols with proper CoinMarketCap → CoinEx → Cache flow
                 cmc_symbols = self.api.get_coinmarketcap_available_symbols(limit=self.coinmarketcap_limit)
                 
                 if cmc_symbols and len(cmc_symbols) > len(self.training_symbols):
                     self.analysis_symbols = cmc_symbols
-                    self.logger.info(f"Updated analysis symbols with {len(self.analysis_symbols)} CoinMarketCap symbols available on CoinEx")
+                    self.logger.info(f"✅ Symbol fetching successful:")
+                    self.logger.info(f"   📈 Analysis symbols: {len(self.analysis_symbols)}")
+                    self.logger.info(f"   🎓 Training symbols: {len(self.training_symbols)} (subset for ML training)")
                     
                     # Update the global config for other components
                     TRADING_CONFIG['analysis_symbols'] = self.analysis_symbols
                 else:
                     # Fallback to training symbols
                     self.analysis_symbols = self.training_symbols.copy()
-                    self.logger.warning(f"Failed to get sufficient CoinMarketCap symbols (got {len(cmc_symbols) if cmc_symbols else 0}), falling back to training symbols")
+                    self.logger.warning(f"⚠️  Symbol fetching failed or insufficient symbols")
+                    self.logger.warning(f"   Got: {len(cmc_symbols) if cmc_symbols else 0} symbols")
+                    self.logger.warning(f"   Expected: > {len(self.training_symbols)} symbols")
+                    self.logger.warning(f"   Falling back to training symbols only")
             else:
                 # Use training symbols for analysis if CoinMarketCap integration disabled
                 self.analysis_symbols = self.training_symbols.copy()
@@ -88,23 +100,29 @@ class DataFetcher:
             try:
                 from utils.symbol_cache import SymbolCache
                 cache = SymbolCache()
-                cached_symbols = cache.load_symbols(max_age_hours=72)  # Accept older cache in emergency
+                cached_symbols = cache.load_symbols(max_age_hours=168)  # Accept old cache in emergency
                 if cached_symbols and len(cached_symbols) > len(self.training_symbols):
                     self.analysis_symbols = cached_symbols
-                    self.logger.info(f"Emergency fallback: using {len(cached_symbols)} cached symbols")
+                    self.logger.info(f"🆘 Emergency cache recovery: using {len(cached_symbols)} cached symbols")
                 else:
                     self.analysis_symbols = self.training_symbols.copy()
-                    self.logger.warning("No cached symbols available, using training symbols")
+                    self.logger.warning("No usable cached symbols, using training symbols")
             except Exception as cache_error:
-                self.logger.error(f"Cache fallback failed: {cache_error}")
+                self.logger.error(f"Cache emergency fallback failed: {cache_error}")
                 self.analysis_symbols = self.training_symbols.copy()
     
     def get_active_symbols(self) -> List[str]:
-        """Get symbols that should be actively monitored for trading/analysis"""
+        """
+        Get symbols that should be actively monitored for trading/analysis
+        This includes the expanded list from CoinMarketCap (if available)
+        """
         return self.analysis_symbols if self.use_coinmarketcap_symbols else self.training_symbols
     
     def get_training_symbols(self) -> List[str]:
-        """Get symbols that should be used for model training"""
+        """
+        Get symbols that should be used for model training ONLY
+        Always returns the 4 core training symbols: BTC, ETH, SOL, DOGE
+        """
         return self.training_symbols
     
     def start_real_time_updates(self):
