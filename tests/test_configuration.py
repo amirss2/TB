@@ -43,6 +43,13 @@ class TestConfiguration(unittest.TestCase):
         expected_symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT']
         self.assertEqual(TRADING_CONFIG['training_symbols'], expected_symbols)
     
+    def test_real_time_data_config(self):
+        """Test real-time data fetching configuration"""
+        self.assertEqual(DATA_CONFIG['update_interval'], 5)
+        self.assertEqual(DATA_CONFIG['real_time_fetch_limit'], 3)
+        self.assertEqual(DATA_CONFIG['real_time_min_interval'], 1)
+        self.assertEqual(DATA_CONFIG['batch_size'], 3)
+    
     def test_coinmarketcap_integration(self):
         """Test CoinMarketCap integration settings"""
         self.assertTrue(TRADING_CONFIG['use_coinmarketcap_symbols'])

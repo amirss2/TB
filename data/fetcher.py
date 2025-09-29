@@ -39,11 +39,14 @@ class DataFetcher:
         self.latest_prices = {}
         self.latest_data_cache = {}
         
-        # Throttling for data fetch spam prevention
+        # Throttling for data fetch spam prevention - more aggressive for real-time
         self.last_fetch_times = {}  # symbol -> timestamp
-        self.min_fetch_interval = get_config_value('data.min_fetch_interval_seconds', 30)  # configurable throttling
+        self.min_fetch_interval = get_config_value('data.real_time_min_interval', 1)  # 1 second for real-time
         
-        # Initialize analysis symbols
+        # Real-time update configuration
+        self.real_time_fetch_limit = DATA_CONFIG.get('real_time_fetch_limit', 3)
+        
+        # Initialize analysis symbols (using cache)
         self._update_analysis_symbols()
         
         self.logger.info(f"Data fetcher initialized with {len(self.training_symbols)} training symbols and {len(self.analysis_symbols)} analysis symbols")
@@ -108,9 +111,8 @@ class DataFetcher:
         
         time_since_last = current_time - last_fetch
         
-        # For 4h timeframe, enforce minimum interval to prevent spam
+        # For real-time updates, use minimal interval (1 second)
         if time_since_last < self.min_fetch_interval:
-            self.logger.debug(f"Throttling fetch for {symbol}: {time_since_last:.1f}s < {self.min_fetch_interval}s")
             return False
             
         return True
@@ -120,7 +122,10 @@ class DataFetcher:
         self.last_fetch_times[symbol] = time.time()
 
     def _update_loop(self):
-        """Main update loop for real-time data with throttling"""
+        """Main update loop for real-time data with fast concurrent updates"""
+        import concurrent.futures
+        import threading
+        
         symbols_refresh_interval = 24 * 3600  # Refresh CoinMarketCap symbols once per day
         last_symbols_refresh = 0
         
@@ -133,31 +138,119 @@ class DataFetcher:
                     self._update_analysis_symbols()
                     last_symbols_refresh = current_time
                 
-                # Get active symbols for monitoring
+                # Get active symbols for monitoring (using cached symbols)
                 active_symbols = self.get_active_symbols()
                 
-                # Update latest prices for all active symbols
-                for symbol in active_symbols:
-                    try:
-                        # Check throttling before updating
-                        if not self._should_fetch_data(symbol):
-                            continue
-                            
-                        self._update_symbol_price(symbol)
-                        self._record_fetch_time(symbol)
-                        
-                        # Update historical data less frequently (every 4 hours for 4h timeframe)
-                        if self._should_update_historical(symbol):
-                            self._update_historical_data(symbol)
-                    
-                    except Exception as e:
-                        self.logger.error(f"Error updating data for {symbol}: {e}")
+                if not active_symbols:
+                    self.logger.warning("No active symbols available, waiting...")
+                    time.sleep(10)
+                    continue
                 
+                # Update all symbols concurrently for speed
+                self._update_symbols_concurrent(active_symbols)
+                
+                # Sleep for next iteration (fast updates every 5 seconds)
                 time.sleep(self.update_interval)
                 
             except Exception as e:
                 self.logger.error(f"Error in data update loop: {e}")
                 time.sleep(5)
+    
+    def _update_symbols_concurrent(self, symbols: List[str]):
+        """Update multiple symbols concurrently for faster processing"""
+        import concurrent.futures
+        
+        max_workers = min(20, len(symbols))  # Limit concurrent connections
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all symbol updates
+            future_to_symbol = {}
+            
+            for symbol in symbols:
+                if self._should_fetch_data(symbol):
+                    future = executor.submit(self._update_single_symbol_complete, symbol)
+                    future_to_symbol[future] = symbol
+            
+            # Collect results
+            completed_count = 0
+            for future in concurrent.futures.as_completed(future_to_symbol, timeout=30):
+                symbol = future_to_symbol[future]
+                try:
+                    future.result()
+                    self._record_fetch_time(symbol)
+                    completed_count += 1
+                except Exception as e:
+                    self.logger.error(f"Error updating {symbol}: {e}")
+            
+            if completed_count > 0:
+                self.logger.debug(f"Updated {completed_count}/{len(symbols)} symbols")
+    
+    def _update_single_symbol_complete(self, symbol: str):
+        """Complete update for a single symbol - both price and recent candles"""
+        try:
+            # 1. Update current price (ticker data)
+            self._update_symbol_price(symbol)
+            
+            # 2. Update last 3 candles for real-time data
+            self._update_recent_candles(symbol)
+            
+        except Exception as e:
+            self.logger.error(f"Error in complete update for {symbol}: {e}")
+    
+    def _update_recent_candles(self, symbol: str):
+        """Update the last 3 candles for real-time trading data"""
+        try:
+            # Fetch last 3 candles in 4h timeframe
+            kline_data = self.api.get_kline_data(symbol, self.timeframe, limit=self.real_time_fetch_limit)
+            
+            if not kline_data:
+                return
+            
+            # Store in database
+            session = db_connection.get_session()
+            
+            for candle_data in kline_data:
+                try:
+                    timestamp = candle_data['timestamp']
+                    
+                    # For 4h timeframe, only process aligned candles
+                    if self.timeframe == '4h' and not self._is_aligned_4h(timestamp):
+                        continue
+                    
+                    # Check if candle already exists
+                    existing_candle = session.query(Candle).filter(
+                        Candle.symbol == symbol,
+                        Candle.timestamp == timestamp
+                    ).first()
+                    
+                    if not existing_candle:
+                        # Create new candle
+                        candle = Candle(
+                            symbol=symbol,
+                            timestamp=timestamp,
+                            open=candle_data['open'],
+                            high=candle_data['high'],
+                            low=candle_data['low'],
+                            close=candle_data['close'],
+                            volume=candle_data['volume']
+                        )
+                        session.add(candle)
+                    else:
+                        # Update existing candle (most recent one might be incomplete)
+                        existing_candle.high = max(existing_candle.high, candle_data['high'])
+                        existing_candle.low = min(existing_candle.low, candle_data['low'])
+                        existing_candle.close = candle_data['close']
+                        existing_candle.volume = candle_data['volume']
+                        
+                except Exception as candle_error:
+                    self.logger.error(f"Error processing candle for {symbol}: {candle_error}")
+                    continue
+            
+            session.commit()
+            session.close()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating recent candles for {symbol}: {e}")
     
     def _update_symbol_price(self, symbol: str):
         """Update current price for a symbol"""
