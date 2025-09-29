@@ -32,9 +32,9 @@ DATABASE_CONFIG = {
 
 # Trading Configuration
 TRADING_CONFIG = {
-    'timeframe': '1m',  # 4-hour timeframe as specified
+    'timeframe': '4h',  # 4-hour timeframe as specified
     'demo_balance': 100.0,  # Starting demo balance in USD
-    'confidence_threshold': 0.6,  # 60% confidence minimum as requested by user
+    'confidence_threshold': 0.7,  # 70% confidence minimum as requested by user
     'training_symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],  # Symbols for model training (kept as requested)
     'symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],  # Keep backward compatibility
     'analysis_symbols': [],  # Will be populated with CoinMarketCap top symbols available on CoinEx
@@ -106,13 +106,13 @@ WEB_CONFIG = {
 
 # Data Update Configuration
 DATA_CONFIG = {
-    'update_interval': 60,  # Update every 60 seconds (1 minute) to collect data sequentially
+    'update_interval': 240,  # Update every 240 seconds (4 minutes) for 4h candles
     'batch_size': 20,  # Increased to 20 candles for better analysis
     'max_retries': 3,
     'timeout': 30,
-    'min_1m_candles': 1440,  # Minimum aligned 4h candles required for training
-    'max_1m_selection_candles': 1440,  # Maximum candles for feature selection subset
-    'max_1m_training_candles': 0,  # Maximum candles for full training (0 or None means use all)
+    'min_4h_candles': 800,  # Minimum aligned 4h candles required for training
+    'max_4h_selection_candles': 800,  # Maximum candles for feature selection subset
+    'max_4h_training_candles': 0,  # Maximum candles for full training (0 or None means use all)
     'use_all_history': True,  # When True, fetch ALL historical data without limits
 }
 
@@ -129,7 +129,7 @@ LOGGING_CONFIG = {
 FEATURE_SELECTION_CONFIG = {
     'enabled': True,  # Enable dynamic feature selection on recent window
     'mode': 'dynamic',  # Dynamic selection mode
-    'selection_window_1m': 1440,  # Use most recent 800 4h candles for feature selection
+    'selection_window_4h': 800,  # Use most recent 800 4h candles for feature selection
     'min_features': 20,  # Minimum features to retain
     'method': 'dynamic_iterative_pruning',  # Method to use when enabled
     'correlation_threshold': 0.95,  # Correlation threshold for pruning

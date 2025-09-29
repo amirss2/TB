@@ -13,6 +13,7 @@ from data.fetcher import DataFetcher
 from database.connection import db_connection
 from database.models import TradingSignal, Position, TradingMetrics
 from config.settings import TRADING_CONFIG, ML_CONFIG
+from utils.network_utils import network_checker
 
 class TradingEngine:
     """
@@ -192,15 +193,38 @@ class TradingEngine:
         self.logger.info("Trading loop stopped")
     
     def _trading_loop(self):
-        """Main trading loop"""
+        """Main trading loop with network connectivity pause/resume"""
         while not self._stop_trading:
             try:
+                # Check network connectivity before processing
+                if not network_checker.is_connected():
+                    self.logger.warning("⏸️  Trading paused: No network connectivity")
+                    self.logger.info("Waiting for network connection to resume trading...")
+                    
+                    # Wait for connection to be restored
+                    if network_checker.wait_for_connection(timeout=300, check_interval=30):
+                        self.logger.info("🔄 Network restored, resuming trading operations")
+                        # Re-test all connections after network restoration
+                        if not self._test_connections():
+                            self.logger.warning("Connection tests failed after network restoration, continuing to wait...")
+                            time.sleep(60)
+                            continue
+                    else:
+                        self.logger.warning("Network timeout, continuing to wait...")
+                        time.sleep(60)
+                        continue
+                
                 # Get active symbols for trading/analysis
                 active_symbols = self.data_fetcher.get_active_symbols()
                 
                 # Process each active symbol
                 for symbol in active_symbols:
                     try:
+                        # Skip processing if network disconnected during loop
+                        if not network_checker.is_connected():
+                            self.logger.warning(f"Network disconnected while processing {symbol}, pausing...")
+                            break
+                        
                         self._process_symbol(symbol)
                     except Exception as e:
                         self.logger.error(f"Error processing {symbol}: {e}")
@@ -498,19 +522,29 @@ class TradingEngine:
             self.logger.error(f"Error updating trading metrics: {e}")
     
     def _test_connections(self) -> bool:
-        """Test all system connections"""
+        """Test all system connections including network connectivity"""
         try:
             # Test database
             if not db_connection.test_connection():
                 self.logger.error("Database connection failed")
                 return False
             
-            # Test API (always test but don't fail in demo mode)
+            # Test network connectivity first
+            if not network_checker.is_connected(force_check=True):
+                self.logger.warning("Network connectivity check failed")
+                if self.demo_mode:
+                    self.logger.warning("Demo mode: continuing without network connectivity")
+                    return False  # Return False to trigger pause mode even in demo
+                else:
+                    self.logger.error("Live mode: network connectivity required")
+                    return False
+            
+            # Test API (only if network is available)
             api_ok = self.api.test_connection()
             if not api_ok:
                 if self.demo_mode:
                     self.logger.warning("API connection failed but continuing in demo mode")
-                    return True  # Don't fail in demo mode
+                    return True  # Don't fail in demo mode if network is available
                 else:
                     self.logger.error("API connection failed in live mode")
                     return False
@@ -519,7 +553,7 @@ class TradingEngine:
             
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}")
-            return False if not self.demo_mode else True
+            return False
     
     def get_system_status(self) -> Dict[str, Any]:
         """Get current system status"""
