@@ -311,10 +311,14 @@ class CoinExAPI:
                 self.logger.warning("No internet connection, trying to load symbols from cache")
                 cached_symbols = self.symbol_cache.load_symbols()
                 if cached_symbols:
-                    # Ensure training symbols are always included
-                    final_symbols = list(set(cached_symbols + training_symbols))
-                    self.logger.info(f"Loaded {len(cached_symbols)} symbols from cache, total with training: {len(final_symbols)}")
-                    return final_symbols
+                    # Verify training symbols are included (they should be, but let's be safe)
+                    missing_training = [s for s in training_symbols if s not in cached_symbols]
+                    if missing_training:
+                        self.logger.warning(f"Adding missing training symbols to offline cache: {missing_training}")
+                        cached_symbols = list(set(cached_symbols + training_symbols))
+                    
+                    self.logger.info(f"Loaded {len(cached_symbols)} symbols from cache due to network issues")
+                    return cached_symbols
                 else:
                     self.logger.warning("No cached symbols available, falling back to training symbols only")
                     return training_symbols
@@ -326,9 +330,14 @@ class CoinExAPI:
                 # Use cached symbols but still try to refresh if they're old
                 cache_info = self.symbol_cache.get_cache_info()
                 if cache_info.get('age_hours', 25) < 24:  # Use cache if less than 24 hours old
-                    final_symbols = list(set(cached_symbols + training_symbols))
-                    self.logger.info(f"Using valid cache: {len(cached_symbols)} symbols, total with training: {len(final_symbols)}")
-                    return final_symbols
+                    # Verify training symbols are included (they should be, but let's be safe)
+                    missing_training = [s for s in training_symbols if s not in cached_symbols]
+                    if missing_training:
+                        self.logger.warning(f"Adding missing training symbols to cache: {missing_training}")
+                        cached_symbols = list(set(cached_symbols + training_symbols))
+                    
+                    self.logger.info(f"Using valid cache: {len(cached_symbols)} symbols (training symbols verified)")
+                    return cached_symbols
             
             # Fetch fresh data from CoinMarketCap and filter by CoinEx availability
             try:
@@ -381,9 +390,14 @@ class CoinExAPI:
                 
                 # Try to use cached symbols as fallback
                 if cached_symbols:
-                    final_symbols = list(set(cached_symbols + training_symbols))
-                    self.logger.warning(f"API failed, using {len(cached_symbols)} cached symbols (total: {len(final_symbols)})")
-                    return final_symbols
+                    # Verify training symbols are included
+                    missing_training = [s for s in training_symbols if s not in cached_symbols]
+                    if missing_training:
+                        self.logger.warning(f"Adding missing training symbols to fallback cache: {missing_training}")
+                        cached_symbols = list(set(cached_symbols + training_symbols))
+                    
+                    self.logger.warning(f"API failed, using {len(cached_symbols)} cached symbols")
+                    return cached_symbols
                 else:
                     self.logger.error("No fresh data and no cache available")
                     raise api_error
@@ -395,9 +409,14 @@ class CoinExAPI:
             try:
                 cached_symbols = self.symbol_cache.load_symbols(max_age_hours=168)  # Accept up to 1 week old
                 if cached_symbols:
-                    final_symbols = list(set(cached_symbols + training_symbols))
-                    self.logger.warning(f"Emergency fallback: using old cache ({len(cached_symbols)} symbols, total: {len(final_symbols)})")
-                    return final_symbols
+                    # Verify training symbols are included
+                    missing_training = [s for s in training_symbols if s not in cached_symbols]
+                    if missing_training:
+                        self.logger.warning(f"Adding missing training symbols to emergency cache: {missing_training}")
+                        cached_symbols = list(set(cached_symbols + training_symbols))
+                    
+                    self.logger.warning(f"Emergency fallback: using old cache ({len(cached_symbols)} symbols)")
+                    return cached_symbols
             except Exception as cache_error:
                 self.logger.error(f"Cache emergency fallback failed: {cache_error}")
             
