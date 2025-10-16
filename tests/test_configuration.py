@@ -19,8 +19,8 @@ class TestConfiguration(unittest.TestCase):
         self.assertEqual(TRADING_CONFIG['timeframe'], '4h')
     
     def test_confidence_threshold(self):
-        """Test that confidence threshold is set to 0.7 (70%)"""
-        self.assertEqual(TRADING_CONFIG['confidence_threshold'], 0.7)
+        """Test that confidence threshold is set to 0.9 (90%)"""
+        self.assertEqual(TRADING_CONFIG['confidence_threshold'], 0.9)
     
     def test_data_config_4h(self):
         """Test data configuration for 4h candles"""

@@ -101,10 +101,11 @@ class ConfigLoader:
             'trading': {
                 'timeframe': '4h',
                 'demo_balance': 100.0,
-                'confidence_threshold': 0.7,  # Fixed: Changed from 0.6 to 0.7 as per user requirements
+                'confidence_threshold': 0.9,  # Fixed: Changed to 0.9 (90% as per latest user requirements)
                 'symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],
-                'max_positions': 4,
-                'risk_per_trade': 0.5  # Fixed: Changed from 0.02 to 0.5 (50% as per user requirements)
+                'max_positions': 4,  # STRICTLY ENFORCED
+                'risk_per_trade': 0.5,  # Fixed: Changed from 0.02 to 0.5 (50% as per user requirements)
+                'min_order_value': 5.0  # Minimum order value in USD to prevent dust orders
             },
             'adaptive_threshold': {
                 'enabled': True,

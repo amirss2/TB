@@ -330,11 +330,32 @@ class TradingEngine:
                 self.logger.info(f"Already have open position for {symbol}, skipping BUY signal")
                 return
             
+            # CRITICAL: Enforce max_positions limit
+            open_positions_count = self._get_open_positions_count()
+            max_positions = TRADING_CONFIG['max_positions']
+            if open_positions_count >= max_positions:
+                self.logger.warning(f"Max positions limit reached ({open_positions_count}/{max_positions}). "
+                                  f"Skipping BUY signal for {symbol}. Close existing positions first.")
+                return
+            
+            # Validate price is not zero or invalid
+            if current_price is None or current_price <= 0:
+                self.logger.error(f"Invalid price for {symbol}: {current_price}. Cannot open position.")
+                return
+            
             # Calculate position size
             position_size = self._calculate_position_size(symbol, current_price)
             
             if position_size <= 0:
                 self.logger.warning(f"Insufficient balance for {symbol} position")
+                return
+            
+            # CRITICAL: Enforce minimum order value to prevent dust orders
+            order_value = position_size * current_price
+            min_order_value = TRADING_CONFIG.get('min_order_value', 5.0)
+            if order_value < min_order_value:
+                self.logger.warning(f"Order value ${order_value:.2f} below minimum ${min_order_value:.2f} for {symbol}. "
+                                  f"Skipping to prevent dust order.")
                 return
             
             if self.demo_mode:
@@ -413,6 +434,19 @@ class TradingEngine:
         except Exception as e:
             self.logger.error(f"Error getting real balance: {e}")
             return 0.0
+    
+    def _get_open_positions_count(self) -> int:
+        """Get count of all open positions across all symbols"""
+        try:
+            session = db_connection.get_session()
+            count = session.query(Position).filter(
+                Position.status == 'OPEN'
+            ).count()
+            session.close()
+            return count
+        except Exception as e:
+            self.logger.error(f"Error getting open positions count: {e}")
+            return 0
     
     def _get_open_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get open position for symbol"""
