@@ -101,10 +101,10 @@ class ConfigLoader:
             'trading': {
                 'timeframe': '4h',
                 'demo_balance': 100.0,
-                'confidence_threshold': 0.6,
+                'confidence_threshold': 0.7,  # Fixed: Changed from 0.6 to 0.7 as per user requirements
                 'symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],
                 'max_positions': 4,
-                'risk_per_trade': 0.02
+                'risk_per_trade': 0.5  # Fixed: Changed from 0.02 to 0.5 (50% as per user requirements)
             },
             'adaptive_threshold': {
                 'enabled': True,

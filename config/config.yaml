@@ -1,12 +1,12 @@
 ---
 # Trading Bot Configuration
 trading:
-  timeframe: "1m"
+  timeframe: "4h"  # Fixed: Changed from 1m to 4h as per user requirements
   demo_balance: 100.0
-  confidence_threshold: 0.6  # Base threshold, will be adaptive
+  confidence_threshold: 0.7  # Fixed: Changed from 0.6 to 0.7 (70% as per user requirements)
   symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT"]
   max_positions: 4
-  risk_per_trade: 0.02
+  risk_per_trade: 0.5  # Fixed: Changed from 0.02 to 0.5 (50% as per user requirements)
 
 # Adaptive threshold configuration
 adaptive_threshold:
