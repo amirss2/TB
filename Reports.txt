@@ -1,0 +1,460 @@
+═══════════════════════════════════════════════════════════════════════════════
+                        گزارش جامع عملکرد ربات تریدر هوش مصنوعی
+                              Trading Bot Comprehensive Report
+═══════════════════════════════════════════════════════════════════════════════
+
+📅 تاریخ تحلیل: 2025-10-17
+🤖 نسخه ربات: Latest (Commit dd2d715)
+📊 تایم‌فریم: 4 ساعته (4h)
+🎯 استانه اعتماد: 90% (0.9)
+
+═══════════════════════════════════════════════════════════════════════════════
+                                  بخش 1: خلاصه اجرایی
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ **موارد عملکردی:**
+  • کانفیگوریشن به‌روز شده و هماهنگ است
+  • محدودیت 4 پوزیشن اجرا می‌شود
+  • حداقل ارزش سفارش $5 رعایت می‌شود
+  • استانه اعتماد 90% فعال است
+  • سیستم کش ارزها فعال و کارآمد است
+
+⚠️ **موارد نیازمند بهبود:**
+  • تحلیل هر 1 دقیقه به جای 60 ثانیه
+  • به‌روزرسانی داده‌ها 10 ارز در ثانیه
+  • به‌روزرسانی ویژه پوزیشن‌های باز
+  • کش خودکار هر بار راه‌اندازی
+  
+═══════════════════════════════════════════════════════════════════════════════
+                           بخش 2: تحلیل دقیق عملکرد فعلی
+═══════════════════════════════════════════════════════════════════════════════
+
+📊 **2.1 مدیریت ارزها**
+
+✅ وضعیت کنونی:
+  • سیستم کش: فعال و کارا
+  • تعداد ارزهای کش شده: 713 ارز
+  • ارزهای آموزشی: 4 ارز (BTC, ETH, SOL, DOGE)
+  • ارزهای تحلیلی: 713 ارز
+  
+✅ جریان صحیح:
+  1. CoinMarketCap → دریافت 1000 ارز برتر
+  2. CoinEx → فیلتر ارزهای قابل معامله
+  3. Cache → ذخیره‌سازی لیست فیلتر شده
+  4. Training → فقط 4 ارز اصلی
+  5. Analysis → همه ارزهای فیلتر شده
+
+⚠️ نیاز به بهبود:
+  • کش باید هر بار راه‌اندازی تازه‌سازی شود
+  • در حال حاضر: کش 24 ساعت معتبر است
+  • پیشنهاد: کش جدید در هر استارت + فالبک به کش قدیمی
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📈 **2.2 چرخه تحلیل و سیگنال‌گیری**
+
+❌ وضعیت کنونی (نیاز به اصلاح):
+  • زمان چرخه: 60 ثانیه (sleep در _trading_loop)
+  • محاسبات: 4 ساعته (صحیح)
+  • تحلیل: تک‌رشته‌ای، آرام
+
+✅ وضعیت مورد انتظار (پیاده‌سازی):
+  • زمان چرخه: 60 ثانیه (1 دقیقه)
+  • محاسبات: 4 ساعته
+  • تحلیل: همزمان، سریع (کسری از ثانیه)
+  • پردازش: 713 ارز در < 1 ثانیه
+
+🔧 راه‌حل پیشنهادی:
+  1. حلقه بی‌نهایت با sleep(60)
+  2. ThreadPoolExecutor برای پردازش موازی
+  3. بهینه‌سازی دسترسی به دیتابیس
+  4. استفاده از داده‌های کش شده در حافظه
+
+═══════════════════════════════════════════════════════════════════════════════
+
+💾 **2.3 جمع‌آوری و به‌روزرسانی داده‌ها**
+
+❌ وضعیت کنونی (نیاز به اصلاح):
+  • به‌روزرسانی: هر 30 ثانیه همه ارزها
+  • تعداد همزمان: 5 worker
+  • محدودیت: API rate limiting
+  • روش: Batch processing
+
+✅ وضعیت مورد انتظار (پیاده‌سازی):
+  • به‌روزرسانی: 10 ارز در ثانیه (یکنواخت)
+  • تعداد همزمان: 10 worker
+  • روش: Continuous rolling updates
+  • چرخه کامل: ~71 ثانیه برای 713 ارز
+
+🔧 راه‌حل پیشنهادی:
+  1. صف دایمی (queue) با 713 ارز
+  2. هر ثانیه: بردار 10 ارز از صف
+  3. به‌روزرسانی موازی با 10 worker
+  4. بازگشت به انتهای صف
+  5. چرخه مداوم و بی‌وقفه
+
+مثال:
+  Sec 0: Update symbols [0-9]
+  Sec 1: Update symbols [10-19]
+  Sec 2: Update symbols [20-29]
+  ...
+  Sec 71: Update symbols [710-713] → Back to [0-9]
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 **2.4 مدیریت پوزیشن‌های باز**
+
+✅ وضعیت کنونی (عملکرد خوب):
+  • محدودیت: 4 پوزیشن (enforce شده)
+  • حداقل سفارش: $5
+  • بررسی قیمت: فعال
+  • استانه اعتماد: 90%
+
+❌ نیاز به بهبود (پیاده‌سازی):
+  • به‌روزرسانی ویژه: پوزیشن‌های باز
+  • فرکانس: هر ثانیه
+  • اولویت: بالاتر از چرخه عادی
+  • هدف: مدیریت دقیق SL/TP
+
+🔧 راه‌حل پیشنهادی:
+  1. Thread جداگانه برای پوزیشن‌های باز
+  2. به‌روزرسانی هر ثانیه (4 ارز حداکثر)
+  3. اولویت بالا در دسترسی به API
+  4. بررسی مداوم شرایط SL/TP
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🤖 **2.5 عملکرد مدل هوش مصنوعی**
+
+⚠️ وضعیت کنونی (نیاز به بررسی بیشتر):
+  • نوع مدل: XGBoost Professional
+  • تعداد درخت‌ها: 8000
+  • Learning rate: 0.01
+  • Max depth: 12
+
+🔍 مشاهدات از لاگ:
+  • سیگنال‌های تولیدی: اکثراً BUY
+  • Probability: ~98% BUY
+  • Confidence: ~75%
+  • تنوع: کم
+
+⚠️ نکات مهم:
+  1. Confidence ≠ Probability
+     - Probability: احتمال کلاس مدل (98%)
+     - Confidence: معیار اطمینان کلی (75%)
+     - فرمول: confidence = prob - penalties
+  
+  2. استانه 90% اکنون فعال است
+     - سیگنال‌های ضعیف فیلتر می‌شوند
+     - فقط سیگنال‌های قوی اجرا می‌شوند
+  
+  3. Model overfitting محتمل
+     - پیشنهاد: Retrain با پارامترهای جدید
+     - کاهش n_estimators: 8000 → 3000
+     - افزایش learning_rate: 0.01 → 0.05
+     - افزودن class_weight='balanced'
+
+═══════════════════════════════════════════════════════════════════════════════
+
+💰 **2.6 مدیریت بودجه و ریسک**
+
+✅ وضعیت کنونی (عملکرد عالی):
+  • موجودی اولیه: $100
+  • حداکثر پوزیشن: 4
+  • ریسک هر معامله: 50% از Available
+  • حداقل سفارش: $5
+
+✅ منطق تخصیص سرمایه:
+  Position 1: $100 × 50% = $50.00 (Available: $50)
+  Position 2: $50 × 50% = $25.00 (Available: $25)
+  Position 3: $25 × 50% = $12.50 (Available: $12.50)
+  Position 4: $12.50 × 50% = $6.25 (Available: $6.25)
+  Position 5: BLOCKED (Available $6.25 > min $5, but max_positions=4)
+
+✅ حفاظت‌های فعال:
+  1. max_positions enforcement
+  2. min_order_value filter ($5)
+  3. Invalid price validation
+  4. Confidence threshold (90%)
+
+═══════════════════════════════════════════════════════════════════════════════
+                               بخش 3: نقشه راه بهبودها
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 **3.1 اولویت 1: چرخه تحلیل 1-دقیقه‌ای**
+
+📌 وضعیت: نیاز به پیاده‌سازی
+🔧 تغییرات لازم:
+  • _trading_loop: حفظ sleep(60)
+  • پردازش موازی: ThreadPoolExecutor با 50 worker
+  • بهینه‌سازی: کش داده‌ها در RAM
+  • نتیجه: تحلیل 713 ارز در < 10 ثانیه
+
+💻 پیاده‌سازی:
+  ```python
+  # در _trading_loop:
+  while not self._stop_trading:
+      start_time = time.time()
+      
+      # Parallel processing of all symbols
+      with ThreadPoolExecutor(max_workers=50) as executor:
+          futures = [
+              executor.submit(self._process_symbol, symbol)
+              for symbol in active_symbols
+          ]
+          concurrent.futures.wait(futures)
+      
+      elapsed = time.time() - start_time
+      sleep_time = max(0, 60 - elapsed)
+      time.sleep(sleep_time)
+  ```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 **3.2 اولویت 2: به‌روزرسانی مداوم داده‌ها**
+
+📌 وضعیت: نیاز به پیاده‌سازی کامل
+🔧 تغییرات لازم:
+  • Thread جدید: ContinuousDataUpdater
+  • صف دایمی: 713 ارز
+  • نرخ به‌روزرسانی: 10 ارز/ثانیه
+  • چرخه: ~71 ثانیه برای همه
+
+💻 پیاده‌سازی:
+  ```python
+  class ContinuousDataUpdater:
+      def __init__(self):
+          self.symbols_queue = deque(all_symbols)
+          self.update_rate = 10  # symbols per second
+      
+      def run(self):
+          while not stop:
+              # Get next 10 symbols
+              batch = [self.symbols_queue.popleft() 
+                       for _ in range(10)]
+              
+              # Update in parallel
+              with ThreadPoolExecutor(10) as executor:
+                  executor.map(update_symbol, batch)
+              
+              # Return to queue
+              self.symbols_queue.extend(batch)
+              
+              time.sleep(1)  # Wait 1 second
+  ```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 **3.3 اولویت 3: به‌روزرسانی ویژه پوزیشن‌های باز**
+
+📌 وضعیت: نیاز به پیاده‌سازی
+🔧 تغییرات لازم:
+  • Thread جدید: ActivePositionMonitor
+  • فرکانس: هر 1 ثانیه
+  • حداکثر: 4 پوزیشن
+  • اولویت: بالا
+
+💻 پیاده‌سازی:
+  ```python
+  class ActivePositionMonitor:
+      def run(self):
+          while not stop:
+              # Get open positions (max 4)
+              open_positions = get_open_positions()
+              
+              for position in open_positions:
+                  # Update price data
+                  latest_price = get_latest_price(position.symbol)
+                  
+                  # Update in database immediately
+                  update_candle_table(position.symbol, latest_price)
+                  
+                  # Check SL/TP conditions
+                  check_position_exit(position, latest_price)
+              
+              time.sleep(1)  # Update every second
+  ```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 **3.4 اولویت 4: تازه‌سازی خودکار کش**
+
+📌 وضعیت: نیاز به تغییر منطق
+🔧 تغییرات لازم:
+  • کش جدید: هر بار استارت
+  • فالبک: کش قدیمی (در صورت خطا)
+  • ذخیره: کش جدید برای دفعات بعد
+  • مدیریت: Versioning کش‌ها
+
+💻 پیاده‌سازی:
+  ```python
+  def _update_analysis_symbols(self):
+      # Always try to fetch fresh symbols on startup
+      self.logger.info("🔄 Fetching fresh symbol list...")
+      
+      try:
+          # Fetch from CoinMarketCap → CoinEx
+          fresh_symbols = self.api.get_coinmarketcap_available_symbols(1000)
+          
+          if fresh_symbols and len(fresh_symbols) > 10:
+              # Save new cache
+              self.symbol_cache.save_symbols(fresh_symbols)
+              self.analysis_symbols = fresh_symbols
+              self.logger.info(f"✅ Fresh symbols cached: {len(fresh_symbols)}")
+          else:
+              raise Exception("Insufficient fresh symbols")
+              
+      except Exception as e:
+          self.logger.warning(f"⚠️  Fresh fetch failed: {e}")
+          self.logger.info("📦 Loading from cache as fallback...")
+          
+          # Fallback to cache
+          cached_symbols = self.symbol_cache.load_symbols()
+          if cached_symbols:
+              self.analysis_symbols = cached_symbols
+              self.logger.info(f"✅ Using cached symbols: {len(cached_symbols)}")
+          else:
+              # Final fallback to training symbols
+              self.analysis_symbols = self.training_symbols
+              self.logger.warning("⚠️  Using training symbols only")
+  ```
+
+═══════════════════════════════════════════════════════════════════════════════
+                              بخش 4: معماری پیشنهادی
+═══════════════════════════════════════════════════════════════════════════════
+
+🏗️ **ساختار Thread-های سیستم:**
+
+```
+Main Thread
+│
+├── Trading Loop Thread (60 sec cycle)
+│   ├── Parallel Symbol Analysis (713 symbols in <10 sec)
+│   └── Signal Generation & Position Opening
+│
+├── Continuous Data Updater Thread
+│   ├── Rolling Queue (713 symbols)
+│   ├── Update Rate: 10 symbols/sec
+│   └── Full Cycle: ~71 seconds
+│
+├── Active Position Monitor Thread
+│   ├── Monitor: Max 4 open positions
+│   ├── Update Rate: Every 1 second
+│   └── Priority: HIGH (SL/TP management)
+│
+└── Position Manager Thread (existing)
+    ├── SL/TP Updates
+    └── Position Closure
+```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+⚡ **جریان داده (Data Flow):**
+
+```
+CoinMarketCap API → CoinEx API → Symbol Cache
+                                       ↓
+                              [713 Filtered Symbols]
+                                       ↓
+                    ┌──────────────────┴──────────────────┐
+                    ↓                                      ↓
+          Training (4 symbols)              Analysis (713 symbols)
+                    ↓                                      ↓
+          Model Training                     Signal Generation
+                    ↓                                      ↓
+              [Trained Model]              [Trading Signals]
+                    └──────────────────┬──────────────────┘
+                                       ↓
+                              Position Management
+                                       ↓
+                            Database (Real-time data)
+```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔄 **چرخه عملیاتی:**
+
+```
+STARTUP:
+  1. Load/Refresh Symbol Cache (1000 CMC → Filter by CoinEx)
+  2. Train Model (4 symbols only)
+  3. Start Data Updater Thread
+  4. Start Position Monitor Thread
+  5. Start Trading Loop Thread
+
+RUNTIME:
+  - Data Updater: 10 symbols/sec continuously
+  - Position Monitor: All open positions every 1 sec
+  - Trading Loop: All 713 symbols every 60 sec
+  - Model: Analyzes based on 4h timeframe data
+
+SHUTDOWN:
+  - Save Symbol Cache
+  - Close All Threads Gracefully
+  - Save Final Metrics
+```
+
+═══════════════════════════════════════════════════════════════════════════════
+                            بخش 5: تست و اعتبارسنجی
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ **تست‌های انجام شده:**
+  1. ✅ Configuration validation (4h, 90%)
+  2. ✅ max_positions enforcement (4 positions)
+  3. ✅ min_order_value filter ($5)
+  4. ✅ Invalid price protection
+  5. ✅ Symbol cache persistence
+
+⏳ **تست‌های مورد نیاز:**
+  1. ⏳ 1-minute analysis cycle
+  2. ⏳ 10 symbols/sec data update
+  3. ⏳ Active position real-time update
+  4. ⏳ Cache refresh on startup
+  5. ⏳ Parallel processing performance
+  6. ⏳ API rate limit compliance
+  7. ⏳ Thread safety and deadlock prevention
+
+═══════════════════════════════════════════════════════════════════════════════
+                               بخش 6: نتیجه‌گیری
+═══════════════════════════════════════════════════════════════════════════════
+
+📊 **وضعیت کلی: خوب با نیاز به بهبودهای عملیاتی**
+
+✅ **نقاط قوت:**
+  • مدیریت بودجه صحیح و محافظت‌شده
+  • محدودیت پوزیشن اجرا می‌شود
+  • کش ارزها فعال و کارآمد
+  • استانه اعتماد 90% فعال
+  • تایم‌فریم 4 ساعته صحیح
+
+🔧 **نیازمند بهبود فوری:**
+  1. پیاده‌سازی چرخه تحلیل 1-دقیقه‌ای
+  2. سیستم به‌روزرسانی مداوم (10 ارز/ثانیه)
+  3. مانیتور اختصاصی پوزیشن‌های باز
+  4. تازه‌سازی خودکار کش در استارت
+
+⚠️ **نیازمند بررسی (آینده):**
+  1. بررسی و رفع overfitting مدل
+  2. بهبود تنوع سیگنال‌ها
+  3. Trailing SL هوشمندتر
+  4. فیلتر کیفیت ارزها
+
+═══════════════════════════════════════════════════════════════════════════════
+
+💡 **توصیه نهایی:**
+
+پیاده‌سازی 4 اولویت اصلی (بخش 3) به ترتیب:
+  1. چرخه تحلیل 1-دقیقه‌ای ✓ (در حال پیاده‌سازی)
+  2. به‌روزرسانی مداوم داده‌ها ✓ (در حال پیاده‌سازی)
+  3. مانیتور پوزیشن‌های باز ✓ (در حال پیاده‌سازی)
+  4. تازه‌سازی خودکار کش ✓ (در حال پیاده‌سازی)
+
+پس از پیاده‌سازی این 4 مورد:
+  • سیستم کاملاً خودکار خواهد بود
+  • عملکرد real-time حقیقی
+  • مدیریت دقیق پوزیشن‌ها
+  • داده‌های همیشه به‌روز
+
+═══════════════════════════════════════════════════════════════════════════════
+                                    پایان گزارش
+═══════════════════════════════════════════════════════════════════════════════

@@ -13,6 +13,7 @@ from data.fetcher import DataFetcher
 from database.connection import db_connection
 from database.models import TradingSignal, Position, TradingMetrics
 from config.settings import TRADING_CONFIG, ML_CONFIG
+from utils.network_utils import network_checker
 
 class TradingEngine:
     """
@@ -192,24 +193,84 @@ class TradingEngine:
         self.logger.info("Trading loop stopped")
     
     def _trading_loop(self):
-        """Main trading loop"""
+        """Main trading loop with network connectivity pause/resume - 60 second cycle with parallel analysis"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        self.logger.info("🔄 Trading loop initialized:")
+        self.logger.info("   ⏰ Analysis cycle: Every 60 seconds")
+        self.logger.info("   🧵 Processing: Parallel analysis of all symbols")
+        self.logger.info("   📊 Timeframe: 4h-based calculations")
+        
         while not self._stop_trading:
             try:
+                cycle_start = time.time()
+                
+                # Check network connectivity before processing
+                if not network_checker.is_connected():
+                    self.logger.warning("⏸️  Trading paused: No network connectivity")
+                    self.logger.info("Waiting for network connection to resume trading...")
+                    
+                    # Wait for connection to be restored
+                    if network_checker.wait_for_connection(timeout=300, check_interval=30):
+                        self.logger.info("🔄 Network restored, resuming trading operations")
+                        # Re-test all connections after network restoration
+                        if not self._test_connections():
+                            self.logger.warning("Connection tests failed after network restoration, continuing to wait...")
+                            time.sleep(60)
+                            continue
+                    else:
+                        self.logger.warning("Network timeout, continuing to wait...")
+                        time.sleep(60)
+                        continue
+                
                 # Get active symbols for trading/analysis
                 active_symbols = self.data_fetcher.get_active_symbols()
+                self.logger.info(f"🔍 Analyzing {len(active_symbols)} symbols in parallel...")
                 
-                # Process each active symbol
-                for symbol in active_symbols:
-                    try:
-                        self._process_symbol(symbol)
-                    except Exception as e:
-                        self.logger.error(f"Error processing {symbol}: {e}")
+                # Process all symbols in parallel for fast analysis
+                processed = 0
+                errors = 0
+                
+                # Reduced workers from 50 to 10 to prevent connection pool exhaustion
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    # Submit all symbol processing tasks
+                    future_to_symbol = {
+                        executor.submit(self._process_symbol, symbol): symbol 
+                        for symbol in active_symbols
+                    }
+                    
+                    # Process completed tasks
+                    for future in as_completed(future_to_symbol):
+                        symbol = future_to_symbol[future]
+                        try:
+                            # Check if network disconnected during processing
+                            if not network_checker.is_connected():
+                                self.logger.warning(f"Network disconnected during analysis, pausing...")
+                                # Cancel remaining futures
+                                for f in future_to_symbol:
+                                    f.cancel()
+                                break
+                            
+                            future.result()  # Get result or raise exception
+                            processed += 1
+                        except Exception as e:
+                            self.logger.debug(f"Error processing {symbol}: {e}")
+                            errors += 1
                 
                 # Update trading metrics
                 self._update_trading_metrics()
                 
-                # Sleep for next iteration (4-hour timeframe)
-                time.sleep(60)  # Check every minute but signal on timeframe completion
+                # Calculate elapsed time and sleep remainder
+                elapsed = time.time() - cycle_start
+                self.logger.info(f"✅ Analysis cycle completed: {processed} symbols processed in {elapsed:.2f}s ({errors} errors)")
+                
+                # Sleep for remainder of 60 seconds (1 minute cycle)
+                sleep_time = max(0, 60 - elapsed)
+                if sleep_time > 0:
+                    self.logger.debug(f"💤 Sleeping {sleep_time:.1f}s until next cycle...")
+                    time.sleep(sleep_time)
+                else:
+                    self.logger.warning(f"⚠️  Cycle took {elapsed:.2f}s (> 60s target)")
                 
             except Exception as e:
                 self.logger.error(f"Error in trading loop: {e}")
@@ -306,11 +367,32 @@ class TradingEngine:
                 self.logger.info(f"Already have open position for {symbol}, skipping BUY signal")
                 return
             
+            # CRITICAL: Enforce max_positions limit
+            open_positions_count = self._get_open_positions_count()
+            max_positions = TRADING_CONFIG['max_positions']
+            if open_positions_count >= max_positions:
+                self.logger.warning(f"Max positions limit reached ({open_positions_count}/{max_positions}). "
+                                  f"Skipping BUY signal for {symbol}. Close existing positions first.")
+                return
+            
+            # Validate price is not zero or invalid
+            if current_price is None or current_price <= 0:
+                self.logger.error(f"Invalid price for {symbol}: {current_price}. Cannot open position.")
+                return
+            
             # Calculate position size
             position_size = self._calculate_position_size(symbol, current_price)
             
             if position_size <= 0:
                 self.logger.warning(f"Insufficient balance for {symbol} position")
+                return
+            
+            # CRITICAL: Enforce minimum order value to prevent dust orders
+            order_value = position_size * current_price
+            min_order_value = TRADING_CONFIG.get('min_order_value', 5.0)
+            if order_value < min_order_value:
+                self.logger.warning(f"Order value ${order_value:.2f} below minimum ${min_order_value:.2f} for {symbol}. "
+                                  f"Skipping to prevent dust order.")
                 return
             
             if self.demo_mode:
@@ -390,6 +472,19 @@ class TradingEngine:
             self.logger.error(f"Error getting real balance: {e}")
             return 0.0
     
+    def _get_open_positions_count(self) -> int:
+        """Get count of all open positions across all symbols"""
+        try:
+            session = db_connection.get_session()
+            count = session.query(Position).filter(
+                Position.status == 'OPEN'
+            ).count()
+            session.close()
+            return count
+        except Exception as e:
+            self.logger.error(f"Error getting open positions count: {e}")
+            return 0
+    
     def _get_open_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get open position for symbol"""
         try:
@@ -436,32 +531,22 @@ class TradingEngine:
     
     def _is_new_timeframe(self, symbol: str) -> bool:
         """
-        Decide if it's time to generate a new signal.
-        حالت تست: اگر timeframe = '1m' باشد همیشه True
+        ALWAYS return True for continuous trading every minute.
+        
+        User requirement: Analyze every minute with 4h-based calculations.
+        The 4h timeframe is used for indicator calculations (RSI, MACD, etc.),
+        NOT for limiting trading frequency.
+        
+        This allows the bot to:
+        - Analyze all symbols every 60 seconds
+        - Use 4h candles for technical indicator calculations
+        - Generate trading signals based on latest 4h indicator values
+        - Trade immediately when high-confidence signals appear
+        
+        Instead of waiting for 4-hour boundaries (0:00, 4:00, 8:00, etc.),
+        the bot now trades continuously based on real-time 4h indicator analysis.
         """
-        now = datetime.now()
-        m = now.minute
-        h = now.hour
-        
-        if self.timeframe == '1m':
-            return True
-        if self.timeframe == '5m':
-            return (m % 5 == 0)
-        if self.timeframe == '15m':
-            return (m % 15 == 0)
-        if self.timeframe == '1h':
-            return m == 0
-        if self.timeframe == '4h':
-            return (h % 4 == 0 and m == 0)
-        
-        # fallback همان منطق قدیم
-        if h % 4 == 0:
-            return True
-        if h % 4 == 2:
-            return True
-        if m % 15 == 0 and (h * 60 + m) % 100 < 10:
-            return True
-        return False
+        return True  # Always trade - indicators are 4h-based, not trading frequency
     
     def _update_trading_metrics(self):
         """Update daily trading metrics"""
@@ -498,19 +583,29 @@ class TradingEngine:
             self.logger.error(f"Error updating trading metrics: {e}")
     
     def _test_connections(self) -> bool:
-        """Test all system connections"""
+        """Test all system connections including network connectivity"""
         try:
             # Test database
             if not db_connection.test_connection():
                 self.logger.error("Database connection failed")
                 return False
             
-            # Test API (always test but don't fail in demo mode)
+            # Test network connectivity first
+            if not network_checker.is_connected(force_check=True):
+                self.logger.warning("Network connectivity check failed")
+                if self.demo_mode:
+                    self.logger.warning("Demo mode: continuing without network connectivity")
+                    return False  # Return False to trigger pause mode even in demo
+                else:
+                    self.logger.error("Live mode: network connectivity required")
+                    return False
+            
+            # Test API (only if network is available)
             api_ok = self.api.test_connection()
             if not api_ok:
                 if self.demo_mode:
                     self.logger.warning("API connection failed but continuing in demo mode")
-                    return True  # Don't fail in demo mode
+                    return True  # Don't fail in demo mode if network is available
                 else:
                     self.logger.error("API connection failed in live mode")
                     return False
@@ -519,7 +614,7 @@ class TradingEngine:
             
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}")
-            return False if not self.demo_mode else True
+            return False
     
     def get_system_status(self) -> Dict[str, Any]:
         """Get current system status"""

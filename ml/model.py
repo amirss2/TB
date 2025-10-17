@@ -229,18 +229,18 @@ class TradingModel:
             # Apply balanced confidence calculation to maintain quality while allowing higher confidence
             # Reduce confidence if the probabilities are close to each other (high uncertainty)
             prob_std = np.std(probabilities, axis=1)
-            uncertainty_penalty = prob_std * 0.8  # Reduced from 2.0 to 0.8 - less aggressive penalty
+            uncertainty_penalty = prob_std * 0.5  # Further reduced from 0.8 to 0.5 - less strict
             
             # Also consider margin between top 2 predictions for each sample
             sorted_probs = np.sort(probabilities, axis=1)[:, ::-1]  # Sort descending
             margins = sorted_probs[:, 0] - sorted_probs[:, 1]  # Difference between 1st and 2nd
-            low_margin_penalty = np.maximum(0, 0.15 - margins) * 1.5  # Reduced threshold from 0.3 to 0.15, multiplier from 2.0 to 1.5
+            low_margin_penalty = np.maximum(0, 0.1 - margins) * 1.0  # Further reduced threshold from 0.15 to 0.1, multiplier from 1.5 to 1.0
             
             # Calculate balanced confidence with reduced penalties
             balanced_confidence = confidence_scores - uncertainty_penalty - low_margin_penalty
             
-            # Ensure confidence doesn't go below 0.1 (10% minimum for valid signals)
-            balanced_confidence = np.maximum(balanced_confidence, 0.1)
+            # Ensure confidence doesn't go below 0.15 (15% minimum for valid signals)
+            balanced_confidence = np.maximum(balanced_confidence, 0.15)
             
             return predictions, balanced_confidence
             
@@ -288,12 +288,12 @@ class TradingModel:
             sorted_probs = sorted(probs_row, reverse=True)
             margin = sorted_probs[0] - sorted_probs[1]  # Difference between 1st and 2nd
             
-            # Balanced adjustments - less aggressive than before
-            uncertainty_penalty = prob_std * 0.8  # Reduced from 2.0 to 0.8
-            low_margin_penalty = max(0, 0.15 - margin) * 1.5  # Reduced threshold from 0.3 to 0.15, multiplier from 2.0 to 1.5
+            # Balanced adjustments - less strict than before
+            uncertainty_penalty = prob_std * 0.5  # Further reduced from 0.8 to 0.5
+            low_margin_penalty = max(0, 0.1 - margin) * 1.0  # Further reduced threshold from 0.15 to 0.1, multiplier from 1.5 to 1.0
             
             # Calculate balanced confidence with reduced penalties
-            balanced_confidence = max(0.1, confidence - uncertainty_penalty - low_margin_penalty)  # 10% minimum instead of 0%
+            balanced_confidence = max(0.15, confidence - uncertainty_penalty - low_margin_penalty)  # 15% minimum instead of 10%
             
             # Use balanced confidence for threshold check
             final_confidence = balanced_confidence

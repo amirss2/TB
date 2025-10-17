@@ -6,6 +6,8 @@ import json
 import logging
 from typing import Dict, List, Any, Optional
 from config.settings import COINEX_CONFIG
+from utils.symbol_cache import SymbolCache
+from utils.network_utils import network_checker
 
 class CoinExAPI:
     """
@@ -19,12 +21,28 @@ class CoinExAPI:
         self.base_url = COINEX_CONFIG['sandbox_url'] if self.sandbox_mode else COINEX_CONFIG['base_url']
         self.logger = logging.getLogger(__name__)
         
-        # Session for connection pooling
+        # Initialize symbol cache
+        self.symbol_cache = SymbolCache()
+        
+        # Session for connection pooling with increased pool size
+        import urllib3
+        from requests.adapters import HTTPAdapter
+        
         self.session = requests.Session()
         self.session.headers.update({
             'Content-Type': 'application/json',
             'User-Agent': 'TradingBot/1.0'
         })
+        
+        # Increase connection pool size to handle concurrent requests
+        # Default is 10, we increase to 20 to support ~15 concurrent workers
+        adapter = HTTPAdapter(
+            pool_connections=50,
+            pool_maxsize=20,
+            max_retries=3
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
     
     def _generate_signature(self, params: Dict[str, Any], secret_key: str) -> str:
         """Generate signature for API authentication"""
@@ -285,34 +303,134 @@ class CoinExAPI:
 
     def get_coinmarketcap_available_symbols(self, limit: int = 1000) -> List[str]:
         """
-        Get symbols from CoinMarketCap top list that are available on CoinEx
+        Get symbols from CoinMarketCap top list that are available on CoinEx with caching
+        
+        Flow: CoinMarketCap (top 1000) → Filter by CoinEx availability → Cache filtered list
+        Always ensures the 4 training symbols are included
         
         Args:
             limit: Number of top cryptocurrencies to check from CoinMarketCap
             
         Returns:
-            List of symbols available on CoinEx from CoinMarketCap top list
+            List of symbols available on CoinEx from CoinMarketCap top list + training symbols
         """
         try:
-            from utils.coinmarketcap_api import CoinMarketCapAPI
+            # Training symbols that must always be included
+            from config.settings import TRADING_CONFIG
+            training_symbols = TRADING_CONFIG['training_symbols']
             
-            # Get top cryptocurrencies from CoinMarketCap
-            cmc_api = CoinMarketCapAPI()
-            top_cryptos = cmc_api.get_top_cryptocurrencies(limit)
+            # Check if we have internet connectivity
+            if not network_checker.is_connected():
+                self.logger.warning("No internet connection, trying to load symbols from cache")
+                cached_symbols = self.symbol_cache.load_symbols()
+                if cached_symbols:
+                    # Verify training symbols are included (they should be, but let's be safe)
+                    missing_training = [s for s in training_symbols if s not in cached_symbols]
+                    if missing_training:
+                        self.logger.warning(f"Adding missing training symbols to offline cache: {missing_training}")
+                        cached_symbols = list(set(cached_symbols + training_symbols))
+                    
+                    self.logger.info(f"Loaded {len(cached_symbols)} symbols from cache due to network issues")
+                    return cached_symbols
+                else:
+                    self.logger.warning("No cached symbols available, falling back to training symbols only")
+                    return training_symbols
             
-            # Convert to trading pair symbols
-            cmc_symbols = cmc_api.extract_symbols(top_cryptos, 'USDT')
+            # ALWAYS TRY FRESH FETCH FIRST (don't use cache even if valid)
+            # Cache is only used as fallback if fresh fetch fails
+            cached_symbols = None  # We'll load this only if needed for fallback
             
-            # Check which ones are available on CoinEx
-            available_symbols = self.get_available_symbols_from_list(cmc_symbols)
+            self.logger.info(f"🆕 MANDATORY FRESH FETCH: Attempting to get new symbol list on startup")
             
-            self.logger.info(f"CoinMarketCap integration: {len(available_symbols)} symbols available on CoinEx from top {limit}")
-            return available_symbols
+            # Fetch fresh data from CoinMarketCap and filter by CoinEx availability
+            try:
+                self.logger.info(f"Fetching fresh top {limit} symbols from CoinMarketCap...")
+                
+                from utils.coinmarketcap_api import CoinMarketCapAPI
+                
+                # Step 1: Get top cryptocurrencies from CoinMarketCap
+                cmc_api = CoinMarketCapAPI()
+                top_cryptos = cmc_api.get_top_cryptocurrencies(limit)
+                
+                if not top_cryptos:
+                    raise Exception("No cryptocurrencies returned from CoinMarketCap")
+                
+                # Step 2: Convert to trading pair symbols
+                cmc_symbols = cmc_api.extract_symbols(top_cryptos, 'USDT')
+                self.logger.info(f"CoinMarketCap returned {len(cmc_symbols)} symbol pairs")
+                
+                # Step 3: Check which ones are available on CoinEx
+                self.logger.info("Filtering symbols by CoinEx availability...")
+                available_symbols = self.get_available_symbols_from_list(cmc_symbols)
+                
+                if available_symbols and len(available_symbols) > 0:
+                    # Step 4: Ensure training symbols are always included
+                    final_symbols = list(set(available_symbols + training_symbols))
+                    
+                    # Step 5: Cache the filtered symbols for future use
+                    cache_metadata = {
+                        'source': 'coinmarketcap_filtered',
+                        'coinmarketcap_limit': limit,
+                        'cmc_symbols_count': len(cmc_symbols),
+                        'coinex_available_count': len(available_symbols),
+                        'final_count_with_training': len(final_symbols),
+                        'training_symbols_included': training_symbols
+                    }
+                    self.symbol_cache.save_symbols(final_symbols, cache_metadata)
+                    
+                    self.logger.info(f"✅ CoinMarketCap → CoinEx filtering complete:")
+                    self.logger.info(f"   📊 CoinMarketCap symbols: {len(cmc_symbols)}")
+                    self.logger.info(f"   ✅ Available on CoinEx: {len(available_symbols)}")
+                    self.logger.info(f"   🔄 Total with training symbols: {len(final_symbols)}")
+                    self.logger.info(f"   💾 Cached for offline use")
+                    
+                    return final_symbols
+                else:
+                    raise Exception("No symbols available on CoinEx from CoinMarketCap list")
+                
+            except Exception as api_error:
+                self.logger.error(f"API error during fresh fetch: {api_error}")
+                
+                # Try to use cached symbols as fallback (load now if needed)
+                if cached_symbols is None:
+                    cached_symbols = self.symbol_cache.load_symbols()
+                
+                if cached_symbols:
+                    # Verify training symbols are included
+                    missing_training = [s for s in training_symbols if s not in cached_symbols]
+                    if missing_training:
+                        self.logger.warning(f"Adding missing training symbols to fallback cache: {missing_training}")
+                        cached_symbols = list(set(cached_symbols + training_symbols))
+                    
+                    self.logger.warning(f"API failed, using {len(cached_symbols)} cached symbols")
+                    return cached_symbols
+                else:
+                    self.logger.error("No fresh data and no cache available")
+                    raise api_error
             
         except Exception as e:
-            self.logger.error(f"Error getting CoinMarketCap symbols: {e}")
-            # Fallback to training symbols
+            self.logger.error(f"Error in symbol fetching flow: {e}")
+            
+            # Emergency fallback: try any cached symbols, even old ones
+            try:
+                if cached_symbols is None:
+                    cached_symbols = self.symbol_cache.load_symbols(max_age_hours=168)  # Accept up to 1 week old
+                
+                if cached_symbols:
+                    # Verify training symbols are included
+                    missing_training = [s for s in training_symbols if s not in cached_symbols]
+                    if missing_training:
+                        self.logger.warning(f"Adding missing training symbols to emergency cache: {missing_training}")
+                        cached_symbols = list(set(cached_symbols + training_symbols))
+                    
+                    self.logger.warning(f"Emergency fallback: using old cache ({len(cached_symbols)} symbols)")
+                    return cached_symbols
+            except Exception as cache_error:
+                self.logger.error(f"Cache emergency fallback failed: {cache_error}")
+            
+            # Final fallback: training symbols only
             from config.settings import TRADING_CONFIG
+            self.logger.warning("All symbol fetching failed, using training symbols only")
             return TRADING_CONFIG['training_symbols']
     
     def get_balance(self) -> Dict[str, Any]:
@@ -475,9 +593,20 @@ class CoinExAPI:
             return candles
             
         except Exception as e:
+            # Check network connectivity before generating fallback data
+            if not network_checker.is_connected():
+                self.logger.error(f"No internet connection and API failed for {symbol}: {e}")
+                # Don't generate fake data when offline, return empty list to trigger pause
+                return []
+            
             self.logger.warning(f"API failed for {symbol}, using fallback data: {e}")
-            # Return fallback demo data for development/testing
-            return self._generate_fallback_data(symbol, limit)
+            # Only return fallback demo data if we have connection but API is down
+            if self.sandbox_mode:
+                return self._generate_fallback_data(symbol, limit)
+            else:
+                # In live mode, don't generate fake data
+                self.logger.error(f"Live mode: API failed and cannot generate fallback data for {symbol}")
+                return []
     
     def _generate_fallback_data(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Generate realistic fallback data when API is unavailable"""
