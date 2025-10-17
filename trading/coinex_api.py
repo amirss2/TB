@@ -323,21 +323,11 @@ class CoinExAPI:
                     self.logger.warning("No cached symbols available, falling back to training symbols only")
                     return training_symbols
             
-            # Check if we have valid cached symbols first
-            cached_symbols = self.symbol_cache.load_symbols()
-            if cached_symbols:
-                self.logger.info(f"Found {len(cached_symbols)} cached symbols, checking if refresh needed...")
-                # Use cached symbols but still try to refresh if they're old
-                cache_info = self.symbol_cache.get_cache_info()
-                if cache_info.get('age_hours', 25) < 24:  # Use cache if less than 24 hours old
-                    # Verify training symbols are included (they should be, but let's be safe)
-                    missing_training = [s for s in training_symbols if s not in cached_symbols]
-                    if missing_training:
-                        self.logger.warning(f"Adding missing training symbols to cache: {missing_training}")
-                        cached_symbols = list(set(cached_symbols + training_symbols))
-                    
-                    self.logger.info(f"Using valid cache: {len(cached_symbols)} symbols (training symbols verified)")
-                    return cached_symbols
+            # ALWAYS TRY FRESH FETCH FIRST (don't use cache even if valid)
+            # Cache is only used as fallback if fresh fetch fails
+            cached_symbols = None  # We'll load this only if needed for fallback
+            
+            self.logger.info(f"🆕 MANDATORY FRESH FETCH: Attempting to get new symbol list on startup")
             
             # Fetch fresh data from CoinMarketCap and filter by CoinEx availability
             try:
@@ -388,7 +378,10 @@ class CoinExAPI:
             except Exception as api_error:
                 self.logger.error(f"API error during fresh fetch: {api_error}")
                 
-                # Try to use cached symbols as fallback
+                # Try to use cached symbols as fallback (load now if needed)
+                if cached_symbols is None:
+                    cached_symbols = self.symbol_cache.load_symbols()
+                
                 if cached_symbols:
                     # Verify training symbols are included
                     missing_training = [s for s in training_symbols if s not in cached_symbols]
@@ -407,7 +400,9 @@ class CoinExAPI:
             
             # Emergency fallback: try any cached symbols, even old ones
             try:
-                cached_symbols = self.symbol_cache.load_symbols(max_age_hours=168)  # Accept up to 1 week old
+                if cached_symbols is None:
+                    cached_symbols = self.symbol_cache.load_symbols(max_age_hours=168)  # Accept up to 1 week old
+                
                 if cached_symbols:
                     # Verify training symbols are included
                     missing_training = [s for s in training_symbols if s not in cached_symbols]
