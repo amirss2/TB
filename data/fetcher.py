@@ -33,6 +33,8 @@ class DataFetcher:
         
         # Threading
         self.update_thread = None
+        self.continuous_updater_thread = None
+        self.position_monitor_thread = None
         self.stop_updates = False
         
         # Data cache
@@ -45,6 +47,10 @@ class DataFetcher:
         
         # Real-time update configuration
         self.real_time_fetch_limit = DATA_CONFIG.get('real_time_fetch_limit', 3)
+        
+        # Continuous update configuration
+        self.symbols_per_second = 10  # Update 10 symbols per second
+        self.symbols_queue = []  # Rolling queue for continuous updates
         
         # Initialize analysis symbols (using cache)
         self.logger.info("🚀 Initializing symbol management system...")
@@ -64,14 +70,16 @@ class DataFetcher:
             self.logger.warning(f"   This may indicate CoinMarketCap/CoinEx integration issues")
     
     def _update_analysis_symbols(self):
-        """Update the list of analysis symbols from CoinMarketCap top cryptocurrencies available on CoinEx"""
+        """Update the list of analysis symbols from CoinMarketCap top cryptocurrencies available on CoinEx
+        Always tries fresh fetch on startup, falls back to cache only on failure"""
         try:
             if self.use_coinmarketcap_symbols:
                 self.logger.info(f"🔄 Starting symbol fetching process...")
                 self.logger.info(f"   📊 Target: Top {self.coinmarketcap_limit} from CoinMarketCap")
                 self.logger.info(f"   🎯 Training symbols (always included): {self.training_symbols}")
+                self.logger.info(f"   🆕 FRESH FETCH: Always attempting new symbol list on startup")
                 
-                # Get symbols with proper CoinMarketCap → CoinEx → Cache flow
+                # Always try to get fresh symbols from CoinMarketCap → CoinEx → Cache
                 cmc_symbols = self.api.get_coinmarketcap_available_symbols(limit=self.coinmarketcap_limit)
                 
                 if cmc_symbols and len(cmc_symbols) > len(self.training_symbols):
@@ -79,6 +87,7 @@ class DataFetcher:
                     self.logger.info(f"✅ Symbol fetching successful:")
                     self.logger.info(f"   📈 Analysis symbols: {len(self.analysis_symbols)}")
                     self.logger.info(f"   🎓 Training symbols: {len(self.training_symbols)} (subset for ML training)")
+                    self.logger.info(f"   💾 Fresh symbol list cached for future use")
                     
                     # Update the global config for other components
                     TRADING_CONFIG['analysis_symbols'] = self.analysis_symbols
@@ -126,24 +135,42 @@ class DataFetcher:
         return self.training_symbols
     
     def start_real_time_updates(self):
-        """Start real-time data updates"""
-        if self.update_thread and self.update_thread.is_alive():
-            self.logger.warning("Real-time updates already running")
-            return
+        """Start all real-time data update systems"""
+        # Start legacy update thread (background refresh)
+        if not self.update_thread or not self.update_thread.is_alive():
+            self.stop_updates = False
+            self.update_thread = threading.Thread(target=self._update_loop, daemon=True)
+            self.update_thread.start()
+            self.logger.info("📡 Legacy update thread started (background refresh)")
         
-        self.stop_updates = False
-        self.update_thread = threading.Thread(target=self._update_loop, daemon=True)
-        self.update_thread.start()
+        # Start continuous updater (10 symbols/second rolling updates)
+        self.start_continuous_updates()
         
-        self.logger.info("Real-time data updates started")
+        # Start position monitor (1-second updates for open positions)
+        self.start_position_monitor()
+        
+        self.logger.info("✅ All real-time data systems started:")
+        self.logger.info("   • Legacy updater: Background refresh")
+        self.logger.info("   • Continuous updater: 10 symbols/sec")
+        self.logger.info("   • Position monitor: Every 1 second")
     
     def stop_real_time_updates(self):
-        """Stop real-time data updates"""
+        """Stop all real-time data update systems"""
         self.stop_updates = True
-        if self.update_thread and self.update_thread.is_alive():
-            self.update_thread.join(timeout=10)
         
-        self.logger.info("Real-time data updates stopped")
+        # Stop all threads
+        threads_to_stop = [
+            ("Legacy updater", self.update_thread),
+            ("Continuous updater", self.continuous_updater_thread),
+            ("Position monitor", self.position_monitor_thread)
+        ]
+        
+        for name, thread in threads_to_stop:
+            if thread and thread.is_alive():
+                thread.join(timeout=10)
+                self.logger.info(f"✓ {name} stopped")
+        
+        self.logger.info("All real-time data systems stopped")
     
     def _should_fetch_data(self, symbol: str) -> bool:
         """Check if we should fetch data for symbol based on throttling rules"""
@@ -778,4 +805,127 @@ class DataFetcher:
             self.logger.info(f"Data refreshed for: {symbols_to_refresh}")
             
         except Exception as e:
+            self.logger.error(f"Error forcing data refresh: {e}")
+    
+    def start_continuous_updates(self):
+        """Start continuous data updates - 10 symbols per second"""
+        if self.continuous_updater_thread and self.continuous_updater_thread.is_alive():
+            self.logger.warning("Continuous updates already running")
+            return
+        
+        # Initialize symbols queue
+        self.symbols_queue = list(self.get_active_symbols())
+        self.logger.info(f"🔄 Starting continuous data updater: {len(self.symbols_queue)} symbols, {self.symbols_per_second}/sec")
+        
+        self.continuous_updater_thread = threading.Thread(target=self._continuous_update_loop, daemon=True)
+        self.continuous_updater_thread.start()
+    
+    def start_position_monitor(self):
+        """Start active position monitoring - updates every second"""
+        if self.position_monitor_thread and self.position_monitor_thread.is_alive():
+            self.logger.warning("Position monitor already running")
+            return
+        
+        self.logger.info("👁️  Starting active position monitor: Updates every 1 second")
+        self.position_monitor_thread = threading.Thread(target=self._position_monitor_loop, daemon=True)
+        self.position_monitor_thread.start()
+    
+    def _continuous_update_loop(self):
+        """Continuous update loop - processes 10 symbols per second in rolling queue"""
+        from collections import deque
+        import concurrent.futures
+        
+        # Convert to deque for efficient rotation
+        symbols_deque = deque(self.symbols_queue)
+        
+        self.logger.info(f"📊 Continuous updater initialized: {len(symbols_deque)} symbols in queue")
+        
+        while not self.stop_updates:
+            try:
+                if not symbols_deque:
+                    # Re-populate queue if empty
+                    symbols_deque = deque(self.get_active_symbols())
+                    self.logger.info(f"🔄 Queue refreshed: {len(symbols_deque)} symbols")
+                
+                # Get next batch (10 symbols)
+                batch = []
+                for _ in range(min(self.symbols_per_second, len(symbols_deque))):
+                    if symbols_deque:
+                        symbol = symbols_deque.popleft()
+                        batch.append(symbol)
+                        symbols_deque.append(symbol)  # Add back to end of queue
+                
+                if not batch:
+                    time.sleep(1)
+                    continue
+                
+                # Update batch in parallel
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = {
+                        executor.submit(self._update_single_symbol_complete, symbol): symbol
+                        for symbol in batch
+                    }
+                    
+                    for future in concurrent.futures.as_completed(futures, timeout=10):
+                        symbol = futures[future]
+                        try:
+                            future.result()
+                            self._record_fetch_time(symbol)
+                        except Exception as e:
+                            self.logger.debug(f"Error updating {symbol} in continuous loop: {e}")
+                
+                # Sleep for 1 second before next batch
+                time.sleep(1)
+                
+            except Exception as e:
+                self.logger.error(f"Error in continuous update loop: {e}")
+                time.sleep(1)
+    
+    def _position_monitor_loop(self):
+        """Monitor active positions - update every second for precise SL/TP management"""
+        import concurrent.futures
+        from database.models import Position
+        
+        self.logger.info("🎯 Position monitor initialized")
+        
+        while not self.stop_updates:
+            try:
+                # Get open positions from database
+                session = db_connection.get_session()
+                open_positions = session.query(Position).filter(
+                    Position.status == 'OPEN'
+                ).all()
+                session.close()
+                
+                if not open_positions:
+                    # No open positions, sleep and continue
+                    time.sleep(1)
+                    continue
+                
+                # Get symbols of open positions
+                position_symbols = list(set([pos.symbol for pos in open_positions]))
+                
+                self.logger.debug(f"📍 Monitoring {len(position_symbols)} symbols with open positions")
+                
+                # Update all position symbols in parallel (high priority)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = {
+                        executor.submit(self._update_single_symbol_complete, symbol): symbol
+                        for symbol in position_symbols
+                    }
+                    
+                    for future in concurrent.futures.as_completed(futures, timeout=5):
+                        symbol = futures[future]
+                        try:
+                            future.result()
+                            # Don't record fetch time for position updates (higher priority)
+                        except Exception as e:
+                            self.logger.debug(f"Error updating position symbol {symbol}: {e}")
+                
+                # Sleep for 1 second before next update
+                time.sleep(1)
+                
+            except Exception as e:
+                self.logger.error(f"Error in position monitor loop: {e}")
+                time.sleep(1)
             self.logger.error(f"Error forcing data refresh: {e}")

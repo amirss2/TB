@@ -193,9 +193,18 @@ class TradingEngine:
         self.logger.info("Trading loop stopped")
     
     def _trading_loop(self):
-        """Main trading loop with network connectivity pause/resume"""
+        """Main trading loop with network connectivity pause/resume - 60 second cycle with parallel analysis"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        self.logger.info("🔄 Trading loop initialized:")
+        self.logger.info("   ⏰ Analysis cycle: Every 60 seconds")
+        self.logger.info("   🧵 Processing: Parallel analysis of all symbols")
+        self.logger.info("   📊 Timeframe: 4h-based calculations")
+        
         while not self._stop_trading:
             try:
+                cycle_start = time.time()
+                
                 # Check network connectivity before processing
                 if not network_checker.is_connected():
                     self.logger.warning("⏸️  Trading paused: No network connectivity")
@@ -216,24 +225,51 @@ class TradingEngine:
                 
                 # Get active symbols for trading/analysis
                 active_symbols = self.data_fetcher.get_active_symbols()
+                self.logger.info(f"🔍 Analyzing {len(active_symbols)} symbols in parallel...")
                 
-                # Process each active symbol
-                for symbol in active_symbols:
-                    try:
-                        # Skip processing if network disconnected during loop
-                        if not network_checker.is_connected():
-                            self.logger.warning(f"Network disconnected while processing {symbol}, pausing...")
-                            break
-                        
-                        self._process_symbol(symbol)
-                    except Exception as e:
-                        self.logger.error(f"Error processing {symbol}: {e}")
+                # Process all symbols in parallel for fast analysis
+                processed = 0
+                errors = 0
+                
+                with ThreadPoolExecutor(max_workers=50) as executor:
+                    # Submit all symbol processing tasks
+                    future_to_symbol = {
+                        executor.submit(self._process_symbol, symbol): symbol 
+                        for symbol in active_symbols
+                    }
+                    
+                    # Process completed tasks
+                    for future in as_completed(future_to_symbol):
+                        symbol = future_to_symbol[future]
+                        try:
+                            # Check if network disconnected during processing
+                            if not network_checker.is_connected():
+                                self.logger.warning(f"Network disconnected during analysis, pausing...")
+                                # Cancel remaining futures
+                                for f in future_to_symbol:
+                                    f.cancel()
+                                break
+                            
+                            future.result()  # Get result or raise exception
+                            processed += 1
+                        except Exception as e:
+                            self.logger.debug(f"Error processing {symbol}: {e}")
+                            errors += 1
                 
                 # Update trading metrics
                 self._update_trading_metrics()
                 
-                # Sleep for next iteration (4-hour timeframe)
-                time.sleep(60)  # Check every minute but signal on timeframe completion
+                # Calculate elapsed time and sleep remainder
+                elapsed = time.time() - cycle_start
+                self.logger.info(f"✅ Analysis cycle completed: {processed} symbols processed in {elapsed:.2f}s ({errors} errors)")
+                
+                # Sleep for remainder of 60 seconds (1 minute cycle)
+                sleep_time = max(0, 60 - elapsed)
+                if sleep_time > 0:
+                    self.logger.debug(f"💤 Sleeping {sleep_time:.1f}s until next cycle...")
+                    time.sleep(sleep_time)
+                else:
+                    self.logger.warning(f"⚠️  Cycle took {elapsed:.2f}s (> 60s target)")
                 
             except Exception as e:
                 self.logger.error(f"Error in trading loop: {e}")
