@@ -48,8 +48,8 @@ class DataFetcher:
         # Real-time update configuration
         self.real_time_fetch_limit = DATA_CONFIG.get('real_time_fetch_limit', 3)
         
-        # Continuous update configuration
-        self.symbols_per_second = 10  # Update 10 symbols per second
+        # Continuous update configuration (reduced to prevent connection pool exhaustion)
+        self.symbols_per_second = 3  # Update 3 symbols per second (reduced from 10)
         self.symbols_queue = []  # Rolling queue for continuous updates
         
         # Initialize analysis symbols (using cache)
@@ -815,7 +815,7 @@ class DataFetcher:
         
         # Initialize symbols queue
         self.symbols_queue = list(self.get_active_symbols())
-        self.logger.info(f"🔄 Starting continuous data updater: {len(self.symbols_queue)} symbols, {self.symbols_per_second}/sec")
+        self.logger.info(f"🔄 Starting continuous data updater: {len(self.symbols_queue)} symbols, {self.symbols_per_second}/sec (reduced workers for stability)")
         
         self.continuous_updater_thread = threading.Thread(target=self._continuous_update_loop, daemon=True)
         self.continuous_updater_thread.start()
@@ -859,8 +859,8 @@ class DataFetcher:
                     time.sleep(1)
                     continue
                 
-                # Update batch in parallel
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                # Update batch in parallel (reduced workers to prevent connection pool issues)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     futures = {
                         executor.submit(self._update_single_symbol_complete, symbol): symbol
                         for symbol in batch
@@ -907,8 +907,8 @@ class DataFetcher:
                 
                 self.logger.debug(f"📍 Monitoring {len(position_symbols)} symbols with open positions")
                 
-                # Update all position symbols in parallel (high priority)
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                # Update all position symbols in parallel (high priority, reduced workers)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                     futures = {
                         executor.submit(self._update_single_symbol_complete, symbol): symbol
                         for symbol in position_symbols

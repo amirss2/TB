@@ -231,7 +231,8 @@ class TradingEngine:
                 processed = 0
                 errors = 0
                 
-                with ThreadPoolExecutor(max_workers=50) as executor:
+                # Reduced workers from 50 to 10 to prevent connection pool exhaustion
+                with ThreadPoolExecutor(max_workers=10) as executor:
                     # Submit all symbol processing tasks
                     future_to_symbol = {
                         executor.submit(self._process_symbol, symbol): symbol 
@@ -530,32 +531,22 @@ class TradingEngine:
     
     def _is_new_timeframe(self, symbol: str) -> bool:
         """
-        Decide if it's time to generate a new signal.
-        حالت تست: اگر timeframe = '1m' باشد همیشه True
+        ALWAYS return True for continuous trading every minute.
+        
+        User requirement: Analyze every minute with 4h-based calculations.
+        The 4h timeframe is used for indicator calculations (RSI, MACD, etc.),
+        NOT for limiting trading frequency.
+        
+        This allows the bot to:
+        - Analyze all symbols every 60 seconds
+        - Use 4h candles for technical indicator calculations
+        - Generate trading signals based on latest 4h indicator values
+        - Trade immediately when high-confidence signals appear
+        
+        Instead of waiting for 4-hour boundaries (0:00, 4:00, 8:00, etc.),
+        the bot now trades continuously based on real-time 4h indicator analysis.
         """
-        now = datetime.now()
-        m = now.minute
-        h = now.hour
-        
-        if self.timeframe == '1m':
-            return True
-        if self.timeframe == '5m':
-            return (m % 5 == 0)
-        if self.timeframe == '15m':
-            return (m % 15 == 0)
-        if self.timeframe == '1h':
-            return m == 0
-        if self.timeframe == '4h':
-            return (h % 4 == 0 and m == 0)
-        
-        # fallback همان منطق قدیم
-        if h % 4 == 0:
-            return True
-        if h % 4 == 2:
-            return True
-        if m % 15 == 0 and (h * 60 + m) % 100 < 10:
-            return True
-        return False
+        return True  # Always trade - indicators are 4h-based, not trading frequency
     
     def _update_trading_metrics(self):
         """Update daily trading metrics"""

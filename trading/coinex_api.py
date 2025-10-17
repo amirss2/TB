@@ -24,12 +24,25 @@ class CoinExAPI:
         # Initialize symbol cache
         self.symbol_cache = SymbolCache()
         
-        # Session for connection pooling
+        # Session for connection pooling with increased pool size
+        import urllib3
+        from requests.adapters import HTTPAdapter
+        
         self.session = requests.Session()
         self.session.headers.update({
             'Content-Type': 'application/json',
             'User-Agent': 'TradingBot/1.0'
         })
+        
+        # Increase connection pool size to handle concurrent requests
+        # Default is 10, we increase to 20 to support ~15 concurrent workers
+        adapter = HTTPAdapter(
+            pool_connections=50,
+            pool_maxsize=20,
+            max_retries=3
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
     
     def _generate_signature(self, params: Dict[str, Any], secret_key: str) -> str:
         """Generate signature for API authentication"""
