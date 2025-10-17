@@ -65,6 +65,102 @@ class IndicatorCalculator:
         result_df['HLC3'] = (result_df['high'] + result_df['low'] + result_df['close']) / 3
         result_df['OHLC4'] = (result_df['open'] + result_df['high'] + result_df['low'] + result_df['close']) / 4
         
+        # Enhanced Feature Engineering
+        result_df = self._add_enhanced_features(result_df)
+        
+        return result_df
+    
+    def _add_enhanced_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add enhanced features for better prediction:
+        - Trend features
+        - Volatility features  
+        - Volume features
+        - Price action features
+        """
+        result_df = df.copy()
+        
+        try:
+            # === TREND FEATURES ===
+            # Calculate SMA for trend features if not exists
+            if 'SMA_50' not in result_df.columns:
+                result_df['SMA_50'] = result_df['close'].rolling(window=50, min_periods=1).mean()
+            
+            # Calculate ATR for volatility-based features if not exists
+            if 'ATR_14' not in result_df.columns:
+                high_low = result_df['high'] - result_df['low']
+                high_close = np.abs(result_df['high'] - result_df['close'].shift())
+                low_close = np.abs(result_df['low'] - result_df['close'].shift())
+                true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+                result_df['ATR_14'] = true_range.rolling(window=14, min_periods=1).mean()
+            
+            # Trend strength: distance from SMA normalized by ATR
+            result_df['Trend_Strength'] = (result_df['close'] - result_df['SMA_50']) / result_df['ATR_14'].replace(0, np.nan)
+            
+            # Trend direction over different periods
+            result_df['Trend_5'] = result_df['close'].rolling(window=5, min_periods=1).apply(
+                lambda x: 1 if len(x) > 0 and x.iloc[-1] > x.iloc[0] else -1, raw=False
+            )
+            result_df['Trend_10'] = result_df['close'].rolling(window=10, min_periods=1).apply(
+                lambda x: 1 if len(x) > 0 and x.iloc[-1] > x.iloc[0] else -1, raw=False
+            )
+            
+            # === VOLATILITY FEATURES ===
+            # Volatility ratio: current ATR vs average ATR
+            result_df['Volatility_Ratio'] = result_df['ATR_14'] / result_df['ATR_14'].rolling(window=50, min_periods=1).mean()
+            
+            # Bollinger Band width (if bands exist, otherwise calculate)
+            if 'Bollinger_Bands_upper' in result_df.columns and 'Bollinger_Bands_lower' in result_df.columns:
+                result_df['BB_Width'] = (result_df['Bollinger_Bands_upper'] - result_df['Bollinger_Bands_lower']) / result_df['close']
+            else:
+                # Calculate simple BB width
+                sma_20 = result_df['close'].rolling(window=20, min_periods=1).mean()
+                std_20 = result_df['close'].rolling(window=20, min_periods=1).std()
+                bb_upper = sma_20 + (2 * std_20)
+                bb_lower = sma_20 - (2 * std_20)
+                result_df['BB_Width'] = (bb_upper - bb_lower) / result_df['close']
+            
+            # === VOLUME FEATURES ===
+            # Volume ratio vs moving average
+            result_df['Volume_SMA_20'] = result_df['volume'].rolling(window=20, min_periods=1).mean()
+            result_df['Volume_Ratio'] = result_df['volume'] / result_df['Volume_SMA_20'].replace(0, np.nan)
+            
+            # Volume change rate
+            result_df['Volume_Change'] = result_df['volume'].pct_change()
+            
+            # Volume trend
+            result_df['Volume_Trend'] = result_df['volume'].rolling(window=5, min_periods=1).apply(
+                lambda x: 1 if len(x) > 0 and x.iloc[-1] > x.iloc[0] else -1, raw=False
+            )
+            
+            # === PRICE ACTION FEATURES ===
+            # Price range (high-low normalized by close)
+            result_df['Price_Range'] = (result_df['high'] - result_df['low']) / result_df['close']
+            
+            # Candle body ratio (absolute change / range)
+            result_df['Candle_Body_Ratio'] = np.abs(result_df['close'] - result_df['open']) / (result_df['high'] - result_df['low']).replace(0, np.nan)
+            
+            # Upper shadow ratio
+            result_df['Upper_Shadow'] = (result_df['high'] - result_df[['open', 'close']].max(axis=1)) / result_df['close']
+            
+            # Lower shadow ratio
+            result_df['Lower_Shadow'] = (result_df[['open', 'close']].min(axis=1) - result_df['low']) / result_df['close']
+            
+            # Price momentum (rate of change)
+            result_df['Price_Momentum_5'] = result_df['close'].pct_change(periods=5)
+            result_df['Price_Momentum_10'] = result_df['close'].pct_change(periods=10)
+            
+            # Gap detection (difference between current open and previous close)
+            result_df['Gap'] = (result_df['open'] - result_df['close'].shift(1)) / result_df['close'].shift(1)
+            
+            # Replace infinities with NaN
+            result_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+            
+            self.logger.debug("Enhanced features added successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Error adding enhanced features: {e}")
+        
         return result_df
     
     def _calculate_indicator(self, df: pd.DataFrame, name: str, info: Dict[str, Any]) -> pd.DataFrame:

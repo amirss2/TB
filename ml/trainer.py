@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.utils.class_weight import compute_class_weight
 
 from ml.model import TradingModel
 from ml.feature_selection import FeatureSelector
@@ -309,15 +310,16 @@ class ModelTrainer:
         Returns:
             Tuple of (up_threshold, down_threshold) that best matches target distribution
         """
-        if 'LABELING_CONFIG' not in globals() or not LABELING_CONFIG:
+        config = LABELING_CONFIG.get('simple_threshold', {})
+        if not config:
             # Fallback to static thresholds if no config
             return 2.0, -2.0
             
-        target_dist = LABELING_CONFIG['target_distribution']
-        up_range = LABELING_CONFIG['search_up_range']
-        down_range = LABELING_CONFIG['search_down_range']
-        max_iterations = LABELING_CONFIG.get('max_search_iterations', 100)
-        tolerance = LABELING_CONFIG.get('convergence_tolerance', 0.01)
+        target_dist = config.get('target_distribution', {'SELL': 0.30, 'BUY': 0.40, 'HOLD': 0.30})
+        up_range = config.get('search_up_range', [0.4, 3.0, 0.1])
+        down_range = config.get('search_down_range', [-3.0, -0.4, 0.1])
+        max_iterations = config.get('max_search_iterations', 100)
+        tolerance = config.get('convergence_tolerance', 0.01)
         
         self.logger.info(f"Calibrating label thresholds for target distribution: {target_dist}")
         
@@ -339,8 +341,8 @@ class ModelTrainer:
         down_thresholds = np.arange(down_range[0], down_range[1] + down_range[2], down_range[2])
         
         best_kl_div = float('inf')
-        best_up_thresh = LABELING_CONFIG['initial_up_pct']
-        best_down_thresh = LABELING_CONFIG['initial_down_pct']
+        best_up_thresh = config.get('initial_up_pct', 2.0)
+        best_down_thresh = config.get('initial_down_pct', -2.0)
         
         iteration_count = 0
         
@@ -390,6 +392,98 @@ class ModelTrainer:
         
         return best_up_thresh, best_down_thresh
 
+    def _generate_labels_triple_barrier(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Generate trading labels using Triple-Barrier method
+        
+        This method identifies profitable trading opportunities by:
+        1. Setting a profit target (TP) based on ATR
+        2. Setting a stop loss (SL) based on ATR
+        3. Labeling as BUY (+1) if TP is hit first
+        4. Labeling as SELL (-1) if SL is hit first
+        5. Labeling as HOLD (0) if neither is hit within time horizon
+        
+        Returns:
+            pd.Series with labels: 0=SELL, 1=BUY, 2=HOLD
+        """
+        try:
+            config = LABELING_CONFIG.get('triple_barrier', {})
+            
+            profit_target_multiplier = config.get('profit_target_atr_multiplier', 0.5)
+            stop_loss_multiplier = config.get('stop_loss_atr_multiplier', 0.5)
+            time_horizon = config.get('time_horizon_candles', 2)
+            max_hold = config.get('max_hold_candles', 4)
+            min_profit_pct = config.get('min_profit_target_pct', 0.3)
+            min_sl_pct = config.get('min_stop_loss_pct', 0.3)
+            
+            self.logger.info(f"Using Triple-Barrier labeling: TP={profit_target_multiplier}×ATR, SL={stop_loss_multiplier}×ATR, horizon={time_horizon}")
+            
+            labels = []
+            
+            # Process each symbol separately
+            for symbol in df['symbol'].unique():
+                symbol_df = df[df['symbol'] == symbol].copy().sort_values('timestamp')
+                
+                # Calculate ATR if not present
+                if 'atr' not in symbol_df.columns:
+                    # Simple ATR calculation: average of (high - low)
+                    symbol_df['atr'] = symbol_df['high'] - symbol_df['low']
+                    symbol_df['atr'] = symbol_df['atr'].rolling(window=14, min_periods=1).mean()
+                
+                symbol_labels = []
+                
+                for i in range(len(symbol_df)):
+                    if i >= len(symbol_df) - max_hold:
+                        # Not enough future data
+                        symbol_labels.append(np.nan)
+                        continue
+                    
+                    current_price = symbol_df.iloc[i]['close']
+                    current_atr = symbol_df.iloc[i]['atr']
+                    
+                    # Calculate profit target and stop loss
+                    profit_target = current_price * (1 + max(min_profit_pct / 100, profit_target_multiplier * current_atr / current_price))
+                    stop_loss = current_price * (1 - max(min_sl_pct / 100, stop_loss_multiplier * current_atr / current_price))
+                    
+                    # Look ahead within time horizon
+                    label = 2  # Default to HOLD
+                    
+                    for j in range(1, min(time_horizon + 1, len(symbol_df) - i)):
+                        future_high = symbol_df.iloc[i + j]['high']
+                        future_low = symbol_df.iloc[i + j]['low']
+                        
+                        # Check if profit target is hit first
+                        if future_high >= profit_target:
+                            label = 1  # BUY signal
+                            break
+                        
+                        # Check if stop loss is hit first
+                        if future_low <= stop_loss:
+                            label = 0  # SELL signal (or avoid this trade)
+                            break
+                    
+                    symbol_labels.append(label)
+                
+                labels.extend(symbol_labels)
+            
+            # Log distribution
+            labels_series = pd.Series(labels)
+            valid_labels = labels_series.dropna()
+            
+            if len(valid_labels) > 0:
+                distribution = {
+                    'BUY': (valid_labels == 1).sum() / len(valid_labels),
+                    'SELL': (valid_labels == 0).sum() / len(valid_labels),
+                    'HOLD': (valid_labels == 2).sum() / len(valid_labels)
+                }
+                self.logger.info(f"Triple-Barrier label distribution: BUY={distribution['BUY']:.3f}, SELL={distribution['SELL']:.3f}, HOLD={distribution['HOLD']:.3f}")
+            
+            return labels_series
+            
+        except Exception as e:
+            self.logger.error(f"Error in triple-barrier labeling: {e}")
+            raise
+
     def _generate_labels(self, df: pd.DataFrame) -> pd.Series:
         """
         Generate trading labels based on future price movement with adaptive thresholding
@@ -399,12 +493,24 @@ class ModelTrainer:
         1 = BUY (price will increase) 
         2 = HOLD (minimal price movement)
         """
-        # Calibrate thresholds if LABELING_CONFIG is available
+        # Check if triple-barrier method is enabled
+        labeling_method = LABELING_CONFIG.get('method', 'simple_threshold')
+        
+        if labeling_method == 'triple_barrier' and LABELING_CONFIG.get('triple_barrier', {}).get('enabled', False):
+            self.logger.info("Using Triple-Barrier labeling method")
+            return self._generate_labels_triple_barrier(df)
+        
+        # Fallback to simple threshold method
+        self.logger.info("Using Simple Threshold labeling method")
+        config = LABELING_CONFIG.get('simple_threshold', {})
+        
+        # Calibrate thresholds if config is available
         try:
             up_threshold, down_threshold = self._calibrate_label_thresholds(df)
         except Exception as e:
             self.logger.warning(f"Threshold calibration failed, using defaults: {e}")
-            up_threshold, down_threshold = 2.0, -2.0
+            up_threshold = config.get('initial_up_pct', 2.0)
+            down_threshold = config.get('initial_down_pct', -2.0)
         
         labels = []
         
@@ -464,6 +570,77 @@ class ModelTrainer:
         X = X.fillna(0)
         
         return X
+    
+    def _balance_training_data(self, X: pd.DataFrame, y: pd.Series, method: str = 'smote') -> Tuple[pd.DataFrame, pd.Series]:
+        """
+        Balance training data to handle class imbalance
+        
+        Args:
+            X: Training features
+            y: Training labels
+            method: Balancing method ('smote', 'class_weight', or 'stratified')
+        
+        Returns:
+            Tuple of (balanced_X, balanced_y)
+        """
+        try:
+            # Check class distribution
+            class_counts = y.value_counts()
+            self.logger.info(f"Original class distribution: {class_counts.to_dict()}")
+            
+            # Calculate imbalance ratio
+            max_count = class_counts.max()
+            min_count = class_counts.min()
+            imbalance_ratio = max_count / min_count if min_count > 0 else float('inf')
+            
+            self.logger.info(f"Class imbalance ratio: {imbalance_ratio:.2f}")
+            
+            # Only apply balancing if significant imbalance exists (ratio > 2.0)
+            if imbalance_ratio <= 2.0:
+                self.logger.info("Classes are relatively balanced, skipping resampling")
+                return X, y
+            
+            if method == 'smote':
+                try:
+                    from imblearn.over_sampling import SMOTE
+                    
+                    self.logger.info("Applying SMOTE for class balancing...")
+                    
+                    # SMOTE requires k_neighbors < minority class samples
+                    min_samples = class_counts.min()
+                    k_neighbors = min(5, min_samples - 1) if min_samples > 1 else 1
+                    
+                    if min_samples <= 1:
+                        self.logger.warning(f"Minority class has only {min_samples} samples, cannot apply SMOTE")
+                        return X, y
+                    
+                    smote = SMOTE(random_state=42, k_neighbors=k_neighbors)
+                    X_balanced, y_balanced = smote.fit_resample(X, y)
+                    
+                    balanced_counts = pd.Series(y_balanced).value_counts()
+                    self.logger.info(f"Balanced class distribution (SMOTE): {balanced_counts.to_dict()}")
+                    
+                    return pd.DataFrame(X_balanced, columns=X.columns), pd.Series(y_balanced)
+                    
+                except ImportError:
+                    self.logger.warning("imbalanced-learn not installed, falling back to class weights")
+                    return X, y
+                except Exception as e:
+                    self.logger.warning(f"SMOTE failed: {e}, using original data")
+                    return X, y
+            
+            elif method == 'class_weight':
+                # Class weights will be calculated and passed to XGBoost
+                self.logger.info("Using class weights for balancing (will be applied in model training)")
+                return X, y
+            
+            else:
+                # No balancing
+                return X, y
+                
+        except Exception as e:
+            self.logger.error(f"Error balancing training data: {e}")
+            return X, y
     
     def train_with_rfe(self, retrain: bool = False) -> Dict[str, Any]:
         """
@@ -628,11 +805,27 @@ class ModelTrainer:
                 stratify=y_full
             )
             
+            # Balance training data
+            self.logger.info("Applying class balancing to training data...")
+            X_train_balanced, y_train_balanced = self._balance_training_data(X_train, y_train, method='smote')
+            
+            # Calculate class weights for XGBoost
+            class_weights = compute_class_weight(
+                'balanced',
+                classes=np.unique(y_train_balanced),
+                y=y_train_balanced
+            )
+            
+            # Update XGB config with scale_pos_weight if applicable
+            if len(class_weights) > 0:
+                # For multi-class, we'll use the ratio for the minority class
+                weight_ratio = max(class_weights) / min(class_weights) if min(class_weights) > 0 else 1.0
+                self.logger.info(f"Calculated class weight ratio: {weight_ratio:.2f}")
+            
             # Scale features
             X_train_scaled = pd.DataFrame(
-                self.scaler.fit_transform(X_train),
-                columns=X_train.columns,
-                index=X_train.index
+                self.scaler.fit_transform(X_train_balanced),
+                columns=X_train_balanced.columns
             )
             
             X_test_scaled = pd.DataFrame(
@@ -646,7 +839,7 @@ class ModelTrainer:
             self.model.set_confidence_threshold(TRADING_CONFIG['confidence_threshold'])
             
             training_metrics = self.model.train(
-                X_train_scaled, y_train, 
+                X_train_scaled, y_train_balanced, 
                 X_test_scaled, y_test,
                 optimize_hyperparameters=True
             )

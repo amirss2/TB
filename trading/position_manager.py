@@ -7,7 +7,7 @@ import time
 from database.connection import db_connection
 from database.models import Position
 from trading.coinex_api import CoinExAPI
-from config.settings import TP_SL_CONFIG, TRADING_CONFIG
+from config.settings import TP_SL_CONFIG, TRADING_CONFIG, FEE_CONFIG
 
 class PositionManager:
     """
@@ -331,17 +331,66 @@ class PositionManager:
             return None
     
     def _calculate_pnl(self, position: Position, current_price: float) -> Dict[str, float]:
-        """Calculate PnL for position"""
+        """
+        Calculate PnL for position with comprehensive fee/spread/slippage calculation
+        
+        This includes:
+        - Entry fee (taker fee when opening position)
+        - Exit fee (taker fee when closing position)
+        - Spread cost (bid/ask spread)
+        - Slippage (market order execution difference)
+        """
+        # Get fee configuration
+        maker_fee = FEE_CONFIG['spot_trading']['maker_fee']
+        taker_fee = FEE_CONFIG['spot_trading']['taker_fee']
+        spread_pct = FEE_CONFIG['spread']['estimate_pct']
+        slippage_pct = FEE_CONFIG['slippage']['estimate_pct']
+        
+        # Calculate position value at entry and exit
+        entry_value = position.entry_price * position.quantity
+        exit_value = current_price * position.quantity
+        
+        # Calculate gross PnL (before fees)
         if position.side == 'LONG':
-            pnl = (current_price - position.entry_price) * position.quantity
-            pnl_percentage = ((current_price - position.entry_price) / position.entry_price) * 100
+            gross_pnl = exit_value - entry_value
+            gross_pnl_percentage = ((current_price - position.entry_price) / position.entry_price) * 100
         else:  # SHORT
-            pnl = (position.entry_price - current_price) * position.quantity
-            pnl_percentage = ((position.entry_price - current_price) / position.entry_price) * 100
+            gross_pnl = entry_value - exit_value
+            gross_pnl_percentage = ((position.entry_price - current_price) / position.entry_price) * 100
+        
+        # Calculate all costs
+        entry_fee = entry_value * taker_fee  # Fee when opening position
+        exit_fee = exit_value * taker_fee    # Fee when closing position
+        spread_cost = (entry_value + exit_value) / 2 * spread_pct  # Spread cost (avg of entry and exit)
+        slippage_cost = (entry_value + exit_value) / 2 * slippage_pct  # Slippage cost
+        
+        # Total costs
+        total_costs = entry_fee + exit_fee + spread_cost + slippage_cost
+        
+        # Net PnL (after all fees and costs)
+        net_pnl = gross_pnl - total_costs
+        net_pnl_percentage = (net_pnl / entry_value) * 100 if entry_value > 0 else 0
+        
+        # Log detailed breakdown
+        self.logger.info(
+            f"PnL Calculation for {position.symbol}: "
+            f"Gross PnL=${gross_pnl:.4f} ({gross_pnl_percentage:.2f}%), "
+            f"Entry Fee=${entry_fee:.4f}, Exit Fee=${exit_fee:.4f}, "
+            f"Spread=${spread_cost:.4f}, Slippage=${slippage_cost:.4f}, "
+            f"Total Costs=${total_costs:.4f}, "
+            f"Net PnL=${net_pnl:.4f} ({net_pnl_percentage:.2f}%)"
+        )
         
         return {
-            'pnl': pnl,
-            'pnl_percentage': pnl_percentage
+            'pnl': net_pnl,  # Net PnL after all costs
+            'pnl_percentage': net_pnl_percentage,
+            'gross_pnl': gross_pnl,
+            'gross_pnl_percentage': gross_pnl_percentage,
+            'entry_fee': entry_fee,
+            'exit_fee': exit_fee,
+            'spread_cost': spread_cost,
+            'slippage_cost': slippage_cost,
+            'total_costs': total_costs
         }
     
     def get_active_positions(self) -> List[Dict[str, Any]]:

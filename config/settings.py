@@ -34,7 +34,7 @@ DATABASE_CONFIG = {
 TRADING_CONFIG = {
     'timeframe': '4h',  # 4-hour timeframe as specified
     'demo_balance': 100.0,  # Starting demo balance in USD
-    'confidence_threshold': 0.9,  # 90% confidence minimum as requested by user (updated from 0.7)
+    'confidence_threshold': 0.7,  # Reduced from 0.9 to 0.7 to allow more signals
     'training_symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],  # Symbols for model training (kept as requested)
     'symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],  # Keep backward compatibility
     'analysis_symbols': [],  # Will be populated with CoinMarketCap top symbols available on CoinEx
@@ -77,6 +77,20 @@ COINEX_CONFIG = {
     'sandbox_mode': os.getenv('COINEX_SANDBOX', 'false').lower() == 'true',  # Default to spot trading API
     'base_url': 'https://api.coinex.com/v1/',  # Spot trading API
     'sandbox_url': 'https://api.coinex.com/v1/',  # Use same spot API for better compatibility
+}
+
+# Trading Fees Configuration (for accurate profit calculation)
+FEE_CONFIG = {
+    'spot_trading': {
+        'maker_fee': 0.0016,  # 0.16% maker fee (CoinEx default)
+        'taker_fee': 0.0026,  # 0.26% taker fee (CoinEx default)
+    },
+    'spread': {
+        'estimate_pct': 0.001,  # Estimated 0.1% spread between bid/ask
+    },
+    'slippage': {
+        'estimate_pct': 0.0005,  # Estimated 0.05% slippage on market orders
+    }
 }
 
 # CoinMarketCap API Configuration
@@ -143,28 +157,46 @@ FEATURE_SELECTION_CONFIG = {
 
 # Professional XGBoost Configuration
 XGB_PRO_CONFIG = {
-    'n_estimators': 8000,  # Large number of trees for professional model (can be increased for larger models)
-    'max_depth': 12,  # Deep trees for complex pattern recognition
-    'learning_rate': 0.01,  # Low learning rate for better generalization with many trees
-    'early_stopping_rounds': 300,  # Higher patience for early stopping (set to 0 to disable)
-    'subsample': 0.8,  # Subsampling for regularization
-    'colsample_bytree': 0.8,  # Feature subsampling
-    'colsample_bylevel': 0.8,  # Additional feature subsampling
-    'reg_alpha': 0.1,  # L1 regularization
-    'reg_lambda': 1.0,  # L2 regularization
-    'min_child_weight': 3,  # Minimum weight in child nodes
-    'gamma': 0.1,  # Minimum split loss
+    'n_estimators': 2000,  # Reduced from 8000 to prevent overfitting
+    'max_depth': 6,  # Reduced from 12 for simpler trees
+    'learning_rate': 0.05,  # Increased from 0.01 for faster learning with fewer trees
+    'early_stopping_rounds': 100,  # Reduced from 300 for quicker stopping
+    'subsample': 0.7,  # Reduced from 0.8 for more regularization
+    'colsample_bytree': 0.7,  # Reduced from 0.8 for more regularization
+    'colsample_bylevel': 0.7,  # Reduced from 0.8 for more regularization
+    'reg_alpha': 1.0,  # Increased from 0.1 for stronger L1 regularization
+    'reg_lambda': 5.0,  # Increased from 1.0 for stronger L2 regularization
+    'min_child_weight': 10,  # Increased from 3 to prevent overfitting
+    'gamma': 0.5,  # Increased from 0.1 for higher split threshold
     'tree_method': 'hist',  # Efficient tree construction method
+    'scale_pos_weight': 1.0,  # Will be adjusted dynamically for class imbalance
 }
 
-# Adaptive Labeling Configuration
+# Triple-Barrier Labeling Configuration
 LABELING_CONFIG = {
-    'target_distribution': {'SELL': 0.40, 'BUY': 0.40, 'HOLD': 0.20},  # Target class distribution
-    'initial_up_pct': 2.0,  # Initial up threshold percentage
-    'initial_down_pct': -2.0,  # Initial down threshold percentage 
-    'search_up_range': [0.4, 3.0, 0.1],  # [start, end, step] for up threshold search
-    'search_down_range': [-3.0, -0.4, 0.1],  # [start, end, step] for down threshold search
-    'optimization_metric': 'kl_divergence',  # Distance metric for distribution fit
-    'max_search_iterations': 100,  # Maximum iterations for threshold search
-    'convergence_tolerance': 0.01,  # Tolerance for distribution convergence
+    'method': 'triple_barrier',  # 'triple_barrier' or 'simple_threshold'
+    
+    # Triple-Barrier Method Settings
+    'triple_barrier': {
+        'enabled': True,
+        'profit_target_atr_multiplier': 0.5,  # TP = current_price + (0.5 × ATR)
+        'stop_loss_atr_multiplier': 0.5,      # SL = current_price - (0.5 × ATR)
+        'time_horizon_candles': 2,            # Look ahead 1-2 candles (4-8 hours for 4h timeframe)
+        'max_hold_candles': 4,                # Maximum holding period (16 hours for 4h)
+        'use_adaptive_atr': True,             # Use adaptive ATR calculation
+        'min_profit_target_pct': 0.3,         # Minimum profit target of 0.3%
+        'min_stop_loss_pct': 0.3,             # Minimum stop loss of 0.3%
+    },
+    
+    # Fallback: Simple Threshold Method (when triple-barrier is disabled)
+    'simple_threshold': {
+        'target_distribution': {'SELL': 0.30, 'BUY': 0.40, 'HOLD': 0.30},  # Favor BUY signals
+        'initial_up_pct': 1.5,  # Reduced from 2.0 for more BUY signals
+        'initial_down_pct': -2.0,  # Keep stricter for SELL
+        'search_up_range': [0.4, 3.0, 0.1],
+        'search_down_range': [-3.0, -0.4, 0.1],
+        'optimization_metric': 'kl_divergence',
+        'max_search_iterations': 100,
+        'convergence_tolerance': 0.01,
+    }
 }

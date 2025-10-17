@@ -205,7 +205,7 @@ class TradingModel:
     
     def predict(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Generate trading predictions
+        Generate trading predictions with improved confidence calculation
         
         Args:
             X: Features for prediction
@@ -223,26 +223,25 @@ class TradingModel:
             # Get class predictions
             predictions = self.model.predict(X)
             
-            # Calculate confidence as maximum probability
-            confidence_scores = np.max(probabilities, axis=1)
+            # Improved confidence calculation using margin-based approach
+            # Sort probabilities descending for each sample
+            sorted_probs = np.sort(probabilities, axis=1)[:, ::-1]
             
-            # Apply balanced confidence calculation to maintain quality while allowing higher confidence
-            # Reduce confidence if the probabilities are close to each other (high uncertainty)
-            prob_std = np.std(probabilities, axis=1)
-            uncertainty_penalty = prob_std * 0.5  # Further reduced from 0.8 to 0.5 - less strict
+            # Maximum probability (top prediction)
+            max_probs = sorted_probs[:, 0]
             
-            # Also consider margin between top 2 predictions for each sample
-            sorted_probs = np.sort(probabilities, axis=1)[:, ::-1]  # Sort descending
-            margins = sorted_probs[:, 0] - sorted_probs[:, 1]  # Difference between 1st and 2nd
-            low_margin_penalty = np.maximum(0, 0.1 - margins) * 1.0  # Further reduced threshold from 0.15 to 0.1, multiplier from 1.5 to 1.0
+            # Margin between top 2 predictions
+            margins = sorted_probs[:, 0] - sorted_probs[:, 1]
             
-            # Calculate balanced confidence with reduced penalties
-            balanced_confidence = confidence_scores - uncertainty_penalty - low_margin_penalty
+            # Confidence = max_prob × (1 + margin)
+            # This rewards both high probability and clear separation
+            margin_factor = np.minimum(margins * 2, 1.0)  # Scale margin, cap at 1.0
+            confidence_scores = max_probs * (0.5 + 0.5 * margin_factor)
             
-            # Ensure confidence doesn't go below 0.15 (15% minimum for valid signals)
-            balanced_confidence = np.maximum(balanced_confidence, 0.15)
+            # Ensure minimum confidence threshold
+            confidence_scores = np.maximum(confidence_scores, 0.15)
             
-            return predictions, balanced_confidence
+            return predictions, confidence_scores
             
         except Exception as e:
             self.logger.error(f"Error making predictions: {e}")
@@ -280,22 +279,19 @@ class TradingModel:
             signal = self.label_map.get(winner_class_value, 'HOLD')
             confidence = float(probs_row[winner_index])
             
-            # Apply balanced confidence calculation to maintain quality while allowing higher confidence
-            # Reduce confidence if probabilities are close (high uncertainty)
-            prob_std = float(np.std(probs_row))
-            
-            # Also consider margin between top 2 predictions
+            # Improved confidence calculation using margin-based approach
             sorted_probs = sorted(probs_row, reverse=True)
-            margin = sorted_probs[0] - sorted_probs[1]  # Difference between 1st and 2nd
+            max_prob = sorted_probs[0]
+            margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else 0.5
             
-            # Balanced adjustments - less strict than before
-            uncertainty_penalty = prob_std * 0.5  # Further reduced from 0.8 to 0.5
-            low_margin_penalty = max(0, 0.1 - margin) * 1.0  # Further reduced threshold from 0.15 to 0.1, multiplier from 1.5 to 1.0
+            # Confidence = max_prob × (1 + margin_factor)
+            margin_factor = min(margin * 2, 1.0)  # Scale margin, cap at 1.0
+            balanced_confidence = max_prob * (0.5 + 0.5 * margin_factor)
             
-            # Calculate balanced confidence with reduced penalties
-            balanced_confidence = max(0.15, confidence - uncertainty_penalty - low_margin_penalty)  # 15% minimum instead of 10%
+            # Ensure minimum confidence
+            balanced_confidence = max(0.15, balanced_confidence)
             
-            # Use balanced confidence for threshold check
+            # Use balanced confidence for final decision
             final_confidence = balanced_confidence
             
             # اطمینان از وجود همه کلیدها
@@ -303,23 +299,21 @@ class TradingModel:
                 if k not in proba_dict:
                     proba_dict[k] = 0.0
             
-            # دیباگ (بعداً خواستی پاک کن)
-            self.logger.debug(f"PRED_DEBUG classes={classes} probs={probs_row.tolist()} mapped={proba_dict} pick={signal} orig_conf={confidence:.3f} balanced_conf={final_confidence:.3f}")
+            # Debug logging
+            self.logger.debug(f"PRED_DEBUG classes={classes} probs={probs_row.tolist()} mapped={proba_dict} pick={signal} max_prob={max_prob:.3f} margin={margin:.3f} final_conf={final_confidence:.3f}")
             
             return {
                 'signal': signal,
-                'confidence': final_confidence,  # Use balanced confidence
+                'confidence': final_confidence,
                 'probabilities': {
                     'BUY': proba_dict['BUY'],
                     'SELL': proba_dict['SELL'],
                     'HOLD': proba_dict['HOLD']
                 },
                 'meets_threshold': final_confidence >= self.confidence_threshold,
-                'original_confidence': confidence,  # Keep original for debugging
-                'uncertainty_penalty': uncertainty_penalty,
-                'margin': margin,  # Margin between top predictions
-                'low_margin_penalty': low_margin_penalty,
-                'balanced_confidence': balanced_confidence  # Added for transparency
+                'original_confidence': confidence,
+                'margin': margin,
+                'margin_factor': margin_factor
             }
             
         except Exception as e:
