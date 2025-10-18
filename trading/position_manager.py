@@ -143,6 +143,17 @@ class PositionManager:
             if self.trading_engine and hasattr(self.trading_engine, 'used_balance'):
                 self.trading_engine.used_balance = max(0, self.trading_engine.used_balance - position_value)
                 self.logger.info(f"Freed ${position_value:.2f} from used_balance. New used_balance: ${self.trading_engine.used_balance:.2f}")
+                
+                # Record wallet transaction for position close
+                if hasattr(self.trading_engine, '_update_wallet_balance'):
+                    # Amount includes original position value + PnL
+                    close_amount = position_value + pnl_info['pnl']
+                    self.trading_engine._update_wallet_balance(
+                        amount=position_value,  # Unlock original amount
+                        transaction_type='position_close',
+                        position_id=position_id,
+                        description=f"Closed {position.side} position for {position.symbol}, PnL: ${pnl_info['pnl']:.2f}"
+                    )
             
             self.logger.info(f"Position {position_id} closed: {reason}, PnL: {pnl_info['pnl']:.4f} ({pnl_info['pnl_percentage']:.2f}%)")
             
@@ -200,6 +211,12 @@ class PositionManager:
     def _check_position_triggers(self, position_id: int):
         """Check TP/SL triggers for a specific position"""
         try:
+            # CRITICAL: Skip position checks if trading engine is paused due to network issues
+            if self.trading_engine and hasattr(self.trading_engine, 'trading_paused_by_network'):
+                if self.trading_engine.trading_paused_by_network:
+                    # System is paused, don't check positions
+                    return
+            
             # Get position from database
             session = db_connection.get_session()
             position = session.query(Position).get(position_id)
