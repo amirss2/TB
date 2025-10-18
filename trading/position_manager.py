@@ -14,8 +14,9 @@ class PositionManager:
     Advanced position management with TP/SL trailing system
     """
     
-    def __init__(self, api: CoinExAPI):
+    def __init__(self, api: CoinExAPI, trading_engine=None):
         self.api = api
+        self.trading_engine = trading_engine  # Reference to trading engine for balance management
         self.logger = logging.getLogger(__name__)
         self.active_positions = {}
         self.monitoring_thread = None
@@ -101,7 +102,7 @@ class PositionManager:
             return None
     
     def close_position(self, position_id: int, reason: str = "Manual close") -> bool:
-        """Close a position"""
+        """Close a position and free up allocated balance"""
         try:
             session = db_connection.get_session()
             position = session.query(Position).get(position_id)
@@ -114,12 +115,15 @@ class PositionManager:
             # Get current price
             current_price = self._get_current_price(position.symbol)
             if current_price is None:
-                self.logger.error(f"Could not get current price for {position.symbol}")
+                self.logger.error(f"Could not get current price for {position.symbol} - cannot close position safely")
                 session.close()
                 return False
             
             # Calculate PnL
             pnl_info = self._calculate_pnl(position, current_price)
+            
+            # CRITICAL FIX: Calculate position value to free from used_balance
+            position_value = position.entry_price * position.quantity
             
             # Update position in database
             position.current_price = current_price
@@ -134,6 +138,11 @@ class PositionManager:
             # Remove from active monitoring
             if position_id in self.active_positions:
                 del self.active_positions[position_id]
+            
+            # CRITICAL FIX: Free up the allocated balance when position closes
+            if self.trading_engine and hasattr(self.trading_engine, 'used_balance'):
+                self.trading_engine.used_balance = max(0, self.trading_engine.used_balance - position_value)
+                self.logger.info(f"Freed ${position_value:.2f} from used_balance. New used_balance: ${self.trading_engine.used_balance:.2f}")
             
             self.logger.info(f"Position {position_id} closed: {reason}, PnL: {pnl_info['pnl']:.4f} ({pnl_info['pnl_percentage']:.2f}%)")
             
@@ -205,6 +214,9 @@ class PositionManager:
             # Get current price
             current_price = self._get_current_price(position.symbol)
             if current_price is None:
+                # CRITICAL FIX: Don't process position if we can't get a valid price
+                # This prevents closing positions with incorrect/stale prices during network issues
+                self.logger.warning(f"Cannot get valid price for {position.symbol}, skipping position check to prevent incorrect closure")
                 session.close()
                 return
             
@@ -308,7 +320,7 @@ class PositionManager:
             }
     
     def _get_current_price(self, symbol: str) -> Optional[float]:
-        """Get current market price for symbol"""
+        """Get current market price for symbol with validation to prevent incorrect closures"""
         try:
             ticker = self.api.get_ticker(symbol)
             
@@ -323,7 +335,24 @@ class PositionManager:
             if price == 0:
                 self.logger.warning(f"Got zero price for {symbol}, ticker data: {ticker}")
                 return None
+            
+            # CRITICAL FIX: Additional validation to prevent stale/incorrect prices
+            # Store last valid price per symbol to detect unreasonable price changes
+            if not hasattr(self, '_last_valid_prices'):
+                self._last_valid_prices = {}
+            
+            if symbol in self._last_valid_prices:
+                last_price = self._last_valid_prices[symbol]
+                price_change_pct = abs((price - last_price) / last_price) * 100
                 
+                # If price changed more than 50% in one check, it's likely incorrect
+                if price_change_pct > 50:
+                    self.logger.error(f"Suspicious price change for {symbol}: {last_price:.6f} -> {price:.6f} ({price_change_pct:.1f}%). "
+                                    f"Rejecting price to prevent incorrect position closure.")
+                    return None
+            
+            # Update last valid price
+            self._last_valid_prices[symbol] = price
             return price
             
         except Exception as e:

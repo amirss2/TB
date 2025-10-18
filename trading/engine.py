@@ -26,7 +26,7 @@ class TradingEngine:
         
         # Initialize components
         self.api = CoinExAPI()
-        self.position_manager = PositionManager(self.api)
+        self.position_manager = PositionManager(self.api, trading_engine=self)  # Pass reference to self
         self.data_fetcher = DataFetcher(self.api)
         self.model = None
         self.trainer = ModelTrainer()
