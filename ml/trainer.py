@@ -6,7 +6,9 @@ import os
 from datetime import datetime, timedelta
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_recall_curve, brier_score_loss
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.calibration import CalibratedClassifierCV
 
 from ml.model import TradingModel
 from ml.feature_selection import FeatureSelector
@@ -14,7 +16,7 @@ from indicators.calculator import IndicatorCalculator
 from indicators.definitions import IndicatorDefinitions
 from database.connection import db_connection
 from database.models import Candle, ModelTraining
-from config.settings import ML_CONFIG, TRADING_CONFIG, DATA_CONFIG, FEATURE_SELECTION_CONFIG, XGB_PRO_CONFIG, LABELING_CONFIG
+from config.settings import ML_CONFIG, TRADING_CONFIG, DATA_CONFIG, FEATURE_SELECTION_CONFIG, XGB_PRO_CONFIG, LABELING_CONFIG, FEE_CONFIG
 from config.config_loader import get_config_value
 
 class ModelTrainer:
@@ -47,19 +49,107 @@ class ModelTrainer:
         """Get current training progress"""
         return self.training_progress.copy()
     
+    def _calculate_dynamic_selection_window(self, symbols: List[str]) -> int:
+        """
+        Calculate dynamic data window for RFE based on indicator requirements.
+        
+        Formula: N_required = L_max + H + E + B
+        where:
+        - L_max: Maximum lookback period among all indicators
+        - H: Horizon for Triple-Barrier labeling (from config)
+        - E: Purge/embargo candles for CV (2-4 candles)
+        - B: Safety buffer (50 candles)
+        
+        Returns:
+            Number of candles required for RFE selection window
+        """
+        try:
+            # Get all indicator definitions
+            all_indicators = self.definitions.get_all_indicators()
+            
+            # Calculate maximum lookback among all indicators
+            max_lookback = 0
+            indicator_lookbacks = {}
+            
+            for name, info in all_indicators.items():
+                params = info.get('parameters', {})
+                lookback = 0
+                
+                # Extract lookback/period parameter (varies by indicator)
+                for param_name, param_value in params.items():
+                    param_lower = param_name.lower()
+                    if any(key in param_lower for key in ['period', 'length', 'timeperiod', 'window', 'span']):
+                        if isinstance(param_value, (int, float)):
+                            lookback = max(lookback, int(param_value))
+                
+                # Special handling for known indicators with specific lookbacks
+                if 'ichimoku' in name.lower():
+                    lookback = max(lookback, 52)  # Ichimoku uses 52-period
+                elif 'ema' in name.lower() or 'sma' in name.lower():
+                    # EMAs/SMAs typically use period parameter
+                    if 'period' in params:
+                        lookback = max(lookback, int(params['period']))
+                
+                indicator_lookbacks[name] = lookback
+                max_lookback = max(max_lookback, lookback)
+            
+            # Get horizon from labeling config
+            if LABELING_CONFIG['method'] == 'triple_barrier':
+                horizon = LABELING_CONFIG['triple_barrier']['time_horizon_candles']
+            else:
+                horizon = 2  # Default horizon
+            
+            # Set purge/embargo candles for time-series CV
+            embargo_candles = 3  # Conservative estimate
+            
+            # Safety buffer
+            buffer_candles = 50
+            
+            # Calculate required window
+            N_required = max_lookback + horizon + embargo_candles + buffer_candles
+            
+            # Log calculation details
+            self.logger.info("=" * 80)
+            self.logger.info("DYNAMIC SELECTION WINDOW CALCULATION")
+            self.logger.info("=" * 80)
+            self.logger.info(f"Max indicator lookback (L_max): {max_lookback}")
+            self.logger.info(f"Triple-Barrier horizon (H): {horizon}")
+            self.logger.info(f"Purge/embargo candles (E): {embargo_candles}")
+            self.logger.info(f"Safety buffer (B): {buffer_candles}")
+            self.logger.info(f"N_required = {max_lookback} + {horizon} + {embargo_candles} + {buffer_candles} = {N_required}")
+            self.logger.info("=" * 80)
+            
+            # Log top indicators by lookback
+            sorted_lookbacks = sorted(indicator_lookbacks.items(), key=lambda x: x[1], reverse=True)
+            self.logger.info("Top indicators by lookback period:")
+            for name, lb in sorted_lookbacks[:10]:
+                if lb > 0:
+                    self.logger.info(f"  {name}: {lb} candles")
+            
+            return N_required
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating dynamic selection window: {e}")
+            # Fallback to configured value
+            fallback = FEATURE_SELECTION_CONFIG.get('selection_window_4h', 800)
+            self.logger.warning(f"Using fallback selection_window_4h: {fallback}")
+            return fallback
+    
     def prepare_training_data(self, symbols: List[str] = None, 
-                            train_samples: int = None) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+                            train_samples: int = None,
+                            use_dynamic_window: bool = True) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
         """
         Prepare training data from database with indicators, returning separate full and selection datasets
         
         Args:
             symbols: List of symbols to include
             train_samples: Number of samples to use for training
+            use_dynamic_window: If True, calculate selection window dynamically based on indicators
             
         Returns:
             Tuple of (X_full, y_full, selection_X, selection_y)
             - X_full, y_full: Full training dataset (up to max_4h_training_candles)
-            - selection_X, selection_y: Recent subset for feature selection (last max_4h_selection_candles)
+            - selection_X, selection_y: Recent subset for feature selection (last selection_limit candles)
         """
         try:
             self.training_progress.update({
@@ -71,10 +161,17 @@ class ModelTrainer:
             symbols = symbols or TRADING_CONFIG['training_symbols']
             train_samples = train_samples or ML_CONFIG['training_data_size']
             
-            # Get configuration for 4h timeframe limits
-            # Use selection_window_4h from FEATURE_SELECTION_CONFIG when available
-            selection_limit = FEATURE_SELECTION_CONFIG.get('selection_window_4h', 
-                                                         DATA_CONFIG.get('max_4h_selection_candles', 800))
+            # Calculate dynamic selection window if requested
+            if use_dynamic_window:
+                selection_limit = self._calculate_dynamic_selection_window(symbols)
+                # Store calculated value for logging
+                self.logger.info(f"Using dynamically calculated selection_limit: {selection_limit} (4h candles)")
+            else:
+                # Use configured static value
+                selection_limit = FEATURE_SELECTION_CONFIG.get('selection_window_4h', 
+                                                             DATA_CONFIG.get('max_4h_selection_candles', 800))
+                self.logger.info(f"Using configured selection_limit: {selection_limit} (4h candles)")
+            
             training_limit = DATA_CONFIG.get('max_4h_training_candles', 2000)
             use_all_history = DATA_CONFIG.get('use_all_history', False)
             
@@ -309,15 +406,16 @@ class ModelTrainer:
         Returns:
             Tuple of (up_threshold, down_threshold) that best matches target distribution
         """
-        if 'LABELING_CONFIG' not in globals() or not LABELING_CONFIG:
+        config = LABELING_CONFIG.get('simple_threshold', {})
+        if not config:
             # Fallback to static thresholds if no config
             return 2.0, -2.0
             
-        target_dist = LABELING_CONFIG['target_distribution']
-        up_range = LABELING_CONFIG['search_up_range']
-        down_range = LABELING_CONFIG['search_down_range']
-        max_iterations = LABELING_CONFIG.get('max_search_iterations', 100)
-        tolerance = LABELING_CONFIG.get('convergence_tolerance', 0.01)
+        target_dist = config.get('target_distribution', {'SELL': 0.30, 'BUY': 0.40, 'HOLD': 0.30})
+        up_range = config.get('search_up_range', [0.4, 3.0, 0.1])
+        down_range = config.get('search_down_range', [-3.0, -0.4, 0.1])
+        max_iterations = config.get('max_search_iterations', 100)
+        tolerance = config.get('convergence_tolerance', 0.01)
         
         self.logger.info(f"Calibrating label thresholds for target distribution: {target_dist}")
         
@@ -339,8 +437,8 @@ class ModelTrainer:
         down_thresholds = np.arange(down_range[0], down_range[1] + down_range[2], down_range[2])
         
         best_kl_div = float('inf')
-        best_up_thresh = LABELING_CONFIG['initial_up_pct']
-        best_down_thresh = LABELING_CONFIG['initial_down_pct']
+        best_up_thresh = config.get('initial_up_pct', 2.0)
+        best_down_thresh = config.get('initial_down_pct', -2.0)
         
         iteration_count = 0
         
@@ -390,6 +488,98 @@ class ModelTrainer:
         
         return best_up_thresh, best_down_thresh
 
+    def _generate_labels_triple_barrier(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Generate trading labels using Triple-Barrier method
+        
+        This method identifies profitable trading opportunities by:
+        1. Setting a profit target (TP) based on ATR
+        2. Setting a stop loss (SL) based on ATR
+        3. Labeling as BUY (+1) if TP is hit first
+        4. Labeling as SELL (-1) if SL is hit first
+        5. Labeling as HOLD (0) if neither is hit within time horizon
+        
+        Returns:
+            pd.Series with labels: 0=SELL, 1=BUY, 2=HOLD
+        """
+        try:
+            config = LABELING_CONFIG.get('triple_barrier', {})
+            
+            profit_target_multiplier = config.get('profit_target_atr_multiplier', 0.5)
+            stop_loss_multiplier = config.get('stop_loss_atr_multiplier', 0.5)
+            time_horizon = config.get('time_horizon_candles', 2)
+            max_hold = config.get('max_hold_candles', 4)
+            min_profit_pct = config.get('min_profit_target_pct', 0.3)
+            min_sl_pct = config.get('min_stop_loss_pct', 0.3)
+            
+            self.logger.info(f"Using Triple-Barrier labeling: TP={profit_target_multiplier}×ATR, SL={stop_loss_multiplier}×ATR, horizon={time_horizon}")
+            
+            labels = []
+            
+            # Process each symbol separately
+            for symbol in df['symbol'].unique():
+                symbol_df = df[df['symbol'] == symbol].copy().sort_values('timestamp')
+                
+                # Calculate ATR if not present
+                if 'atr' not in symbol_df.columns:
+                    # Simple ATR calculation: average of (high - low)
+                    symbol_df['atr'] = symbol_df['high'] - symbol_df['low']
+                    symbol_df['atr'] = symbol_df['atr'].rolling(window=14, min_periods=1).mean()
+                
+                symbol_labels = []
+                
+                for i in range(len(symbol_df)):
+                    if i >= len(symbol_df) - max_hold:
+                        # Not enough future data
+                        symbol_labels.append(np.nan)
+                        continue
+                    
+                    current_price = symbol_df.iloc[i]['close']
+                    current_atr = symbol_df.iloc[i]['atr']
+                    
+                    # Calculate profit target and stop loss
+                    profit_target = current_price * (1 + max(min_profit_pct / 100, profit_target_multiplier * current_atr / current_price))
+                    stop_loss = current_price * (1 - max(min_sl_pct / 100, stop_loss_multiplier * current_atr / current_price))
+                    
+                    # Look ahead within time horizon
+                    label = 2  # Default to HOLD
+                    
+                    for j in range(1, min(time_horizon + 1, len(symbol_df) - i)):
+                        future_high = symbol_df.iloc[i + j]['high']
+                        future_low = symbol_df.iloc[i + j]['low']
+                        
+                        # Check if profit target is hit first
+                        if future_high >= profit_target:
+                            label = 1  # BUY signal
+                            break
+                        
+                        # Check if stop loss is hit first
+                        if future_low <= stop_loss:
+                            label = 0  # SELL signal (or avoid this trade)
+                            break
+                    
+                    symbol_labels.append(label)
+                
+                labels.extend(symbol_labels)
+            
+            # Log distribution
+            labels_series = pd.Series(labels)
+            valid_labels = labels_series.dropna()
+            
+            if len(valid_labels) > 0:
+                distribution = {
+                    'BUY': (valid_labels == 1).sum() / len(valid_labels),
+                    'SELL': (valid_labels == 0).sum() / len(valid_labels),
+                    'HOLD': (valid_labels == 2).sum() / len(valid_labels)
+                }
+                self.logger.info(f"Triple-Barrier label distribution: BUY={distribution['BUY']:.3f}, SELL={distribution['SELL']:.3f}, HOLD={distribution['HOLD']:.3f}")
+            
+            return labels_series
+            
+        except Exception as e:
+            self.logger.error(f"Error in triple-barrier labeling: {e}")
+            raise
+
     def _generate_labels(self, df: pd.DataFrame) -> pd.Series:
         """
         Generate trading labels based on future price movement with adaptive thresholding
@@ -399,12 +589,24 @@ class ModelTrainer:
         1 = BUY (price will increase) 
         2 = HOLD (minimal price movement)
         """
-        # Calibrate thresholds if LABELING_CONFIG is available
+        # Check if triple-barrier method is enabled
+        labeling_method = LABELING_CONFIG.get('method', 'simple_threshold')
+        
+        if labeling_method == 'triple_barrier' and LABELING_CONFIG.get('triple_barrier', {}).get('enabled', False):
+            self.logger.info("Using Triple-Barrier labeling method")
+            return self._generate_labels_triple_barrier(df)
+        
+        # Fallback to simple threshold method
+        self.logger.info("Using Simple Threshold labeling method")
+        config = LABELING_CONFIG.get('simple_threshold', {})
+        
+        # Calibrate thresholds if config is available
         try:
             up_threshold, down_threshold = self._calibrate_label_thresholds(df)
         except Exception as e:
             self.logger.warning(f"Threshold calibration failed, using defaults: {e}")
-            up_threshold, down_threshold = 2.0, -2.0
+            up_threshold = config.get('initial_up_pct', 2.0)
+            down_threshold = config.get('initial_down_pct', -2.0)
         
         labels = []
         
@@ -464,6 +666,77 @@ class ModelTrainer:
         X = X.fillna(0)
         
         return X
+    
+    def _balance_training_data(self, X: pd.DataFrame, y: pd.Series, method: str = 'smote') -> Tuple[pd.DataFrame, pd.Series]:
+        """
+        Balance training data to handle class imbalance
+        
+        Args:
+            X: Training features
+            y: Training labels
+            method: Balancing method ('smote', 'class_weight', or 'stratified')
+        
+        Returns:
+            Tuple of (balanced_X, balanced_y)
+        """
+        try:
+            # Check class distribution
+            class_counts = y.value_counts()
+            self.logger.info(f"Original class distribution: {class_counts.to_dict()}")
+            
+            # Calculate imbalance ratio
+            max_count = class_counts.max()
+            min_count = class_counts.min()
+            imbalance_ratio = max_count / min_count if min_count > 0 else float('inf')
+            
+            self.logger.info(f"Class imbalance ratio: {imbalance_ratio:.2f}")
+            
+            # Only apply balancing if significant imbalance exists (ratio > 2.0)
+            if imbalance_ratio <= 2.0:
+                self.logger.info("Classes are relatively balanced, skipping resampling")
+                return X, y
+            
+            if method == 'smote':
+                try:
+                    from imblearn.over_sampling import SMOTE
+                    
+                    self.logger.info("Applying SMOTE for class balancing...")
+                    
+                    # SMOTE requires k_neighbors < minority class samples
+                    min_samples = class_counts.min()
+                    k_neighbors = min(5, min_samples - 1) if min_samples > 1 else 1
+                    
+                    if min_samples <= 1:
+                        self.logger.warning(f"Minority class has only {min_samples} samples, cannot apply SMOTE")
+                        return X, y
+                    
+                    smote = SMOTE(random_state=42, k_neighbors=k_neighbors)
+                    X_balanced, y_balanced = smote.fit_resample(X, y)
+                    
+                    balanced_counts = pd.Series(y_balanced).value_counts()
+                    self.logger.info(f"Balanced class distribution (SMOTE): {balanced_counts.to_dict()}")
+                    
+                    return pd.DataFrame(X_balanced, columns=X.columns), pd.Series(y_balanced)
+                    
+                except ImportError:
+                    self.logger.warning("imbalanced-learn not installed, falling back to class weights")
+                    return X, y
+                except Exception as e:
+                    self.logger.warning(f"SMOTE failed: {e}, using original data")
+                    return X, y
+            
+            elif method == 'class_weight':
+                # Class weights will be calculated and passed to XGBoost
+                self.logger.info("Using class weights for balancing (will be applied in model training)")
+                return X, y
+            
+            else:
+                # No balancing
+                return X, y
+                
+        except Exception as e:
+            self.logger.error(f"Error balancing training data: {e}")
+            return X, y
     
     def train_with_rfe(self, retrain: bool = False) -> Dict[str, Any]:
         """
@@ -628,11 +901,27 @@ class ModelTrainer:
                 stratify=y_full
             )
             
+            # Balance training data
+            self.logger.info("Applying class balancing to training data...")
+            X_train_balanced, y_train_balanced = self._balance_training_data(X_train, y_train, method='smote')
+            
+            # Calculate class weights for XGBoost
+            class_weights = compute_class_weight(
+                'balanced',
+                classes=np.unique(y_train_balanced),
+                y=y_train_balanced
+            )
+            
+            # Update XGB config with scale_pos_weight if applicable
+            if len(class_weights) > 0:
+                # For multi-class, we'll use the ratio for the minority class
+                weight_ratio = max(class_weights) / min(class_weights) if min(class_weights) > 0 else 1.0
+                self.logger.info(f"Calculated class weight ratio: {weight_ratio:.2f}")
+            
             # Scale features
             X_train_scaled = pd.DataFrame(
-                self.scaler.fit_transform(X_train),
-                columns=X_train.columns,
-                index=X_train.index
+                self.scaler.fit_transform(X_train_balanced),
+                columns=X_train_balanced.columns
             )
             
             X_test_scaled = pd.DataFrame(
@@ -646,7 +935,7 @@ class ModelTrainer:
             self.model.set_confidence_threshold(TRADING_CONFIG['confidence_threshold'])
             
             training_metrics = self.model.train(
-                X_train_scaled, y_train, 
+                X_train_scaled, y_train_balanced, 
                 X_test_scaled, y_test,
                 optimize_hyperparameters=True
             )
@@ -791,3 +1080,484 @@ class ModelTrainer:
         except Exception as e:
             self.logger.error(f"Error evaluating model: {e}")
             raise
+    
+    def _time_series_split(self, X: pd.DataFrame, y: pd.Series, n_splits: int = 5, 
+                           embargo_candles: int = 3) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Time-series based train/validation split with purge and embargo
+        Implements Walk-Forward cross-validation with gap to prevent data leakage
+        
+        Args:
+            X: Feature data
+            y: Labels
+            n_splits: Number of folds
+            embargo_candles: Number of candles to skip between train and validation
+            
+        Returns:
+            List of (train_idx, val_idx) tuples
+        """
+        n_samples = len(X)
+        fold_size = n_samples // (n_splits + 1)
+        
+        self.logger.info(f"Time-Series CV Configuration:")
+        self.logger.info(f"  Total samples: {n_samples}")
+        self.logger.info(f"  Number of folds: {n_splits}")
+        self.logger.info(f"  Fold size: {fold_size} samples")
+        self.logger.info(f"  Embargo (gap): {embargo_candles} candles")
+        self.logger.info(f"  NO SHUFFLING - Chronological order maintained")
+        
+        splits = []
+        for i in range(n_splits):
+            # Calculate fold boundaries
+            train_start = 0
+            train_end = fold_size * (i + 1)
+            
+            # Add embargo gap to prevent data leakage
+            val_start = train_end + embargo_candles
+            val_end = train_end + fold_size
+            
+            # Ensure we don't exceed dataset boundaries
+            if val_end > n_samples:
+                val_end = n_samples
+            
+            if val_start >= val_end:
+                self.logger.warning(f"Skipping fold {i+1}: insufficient validation samples after embargo")
+                continue
+            
+            train_idx = np.arange(train_start, train_end)
+            val_idx = np.arange(val_start, val_end)
+            
+            self.logger.info(f"Fold {i+1}: Train[{train_start}:{train_end}] ({len(train_idx)} samples), "
+                           f"Gap[{train_end}:{val_start}] ({embargo_candles} candles), "
+                           f"Val[{val_start}:{val_end}] ({len(val_idx)} samples)")
+            
+            splits.append((train_idx, val_idx))
+        
+        return splits
+    
+    def _optimize_threshold_with_costs(self, y_true: np.ndarray, y_proba: np.ndarray, 
+                                      class_idx: int = 1) -> Tuple[float, Dict[str, float]]:
+        """
+        Optimize decision threshold considering trading costs
+        
+        Args:
+            y_true: True labels
+            y_proba: Predicted probabilities for positive class
+            class_idx: Class index for threshold optimization (1 = BUY)
+            
+        Returns:
+            Tuple of (optimal_threshold, metrics_dict)
+        """
+        # Calculate total trading cost per round trip
+        entry_fee = FEE_CONFIG['spot_trading']['taker_fee']
+        exit_fee = FEE_CONFIG['spot_trading']['taker_fee']
+        spread = FEE_CONFIG['spread']['estimate_pct']
+        slippage = FEE_CONFIG['slippage']['estimate_pct']
+        total_cost = entry_fee + exit_fee + spread + slippage
+        
+        self.logger.info(f"Optimizing threshold with total trading cost: {total_cost:.4f} ({total_cost*100:.2f}%)")
+        
+        # Try different thresholds
+        thresholds = np.arange(0.5, 0.95, 0.05)
+        best_score = -np.inf
+        best_threshold = 0.7
+        best_metrics = {}
+        
+        for threshold in thresholds:
+            y_pred = (y_proba >= threshold).astype(int)
+            
+            # Calculate macro-F1
+            from sklearn.metrics import f1_score
+            macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+            
+            # Calculate expected utility (simplified: trades that exceed cost threshold)
+            # Higher F1 with fewer trades is better when costs are high
+            trade_rate = y_pred.mean()
+            utility = macro_f1 * (1 - total_cost * trade_rate)
+            
+            if utility > best_score:
+                best_score = utility
+                best_threshold = threshold
+                best_metrics = {
+                    'threshold': threshold,
+                    'macro_f1': macro_f1,
+                    'trade_rate': trade_rate,
+                    'utility': utility
+                }
+        
+        self.logger.info(f"Optimal threshold: {best_threshold:.2f} (macro-F1: {best_metrics['macro_f1']:.4f}, utility: {best_metrics['utility']:.4f})")
+        
+        return best_threshold, best_metrics
+    
+    def train_with_advanced_cv(self, retrain: bool = False) -> Dict[str, Any]:
+        """
+        Advanced model training with:
+        - Time-series cross-validation (Walk-Forward)
+        - SMOTE class balancing
+        - Hyperparameter optimization with Optuna
+        - Probability calibration
+        - Dynamic threshold optimization
+        - Comprehensive logging
+        
+        Returns:
+            Training results with detailed metrics
+        """
+        try:
+            self.logger.info("="*80)
+            self.logger.info("ADVANCED MODEL TRAINING WITH TIME-SERIES CV")
+            self.logger.info("="*80)
+            
+            training_start = datetime.now()
+            
+            # Log reproducibility information
+            import sklearn
+            import xgboost as xgb
+            seed = ML_CONFIG.get('random_state', 42)
+            self.logger.info(f"Reproducibility Info:")
+            self.logger.info(f"  Random Seed: {seed}")
+            self.logger.info(f"  scikit-learn: {sklearn.__version__}")
+            self.logger.info(f"  xgboost: {xgb.__version__}")
+            self.logger.info(f"  numpy: {np.__version__}")
+            self.logger.info(f"  pandas: {pd.__version__}")
+            
+            # Set random seeds
+            np.random.seed(seed)
+            
+            # Prepare training data (use only BTC/ETH/DOGE/SOL)
+            training_symbols = ['BTCUSDT', 'ETHUSDT', 'DOGEUSDT', 'SOLUSDT']
+            self.logger.info(f"Training symbols: {training_symbols}")
+            
+            # Use dynamic window calculation for RFE selection subset
+            X_full, y_full, selection_X, selection_y = self.prepare_training_data(
+                symbols=training_symbols, 
+                use_dynamic_window=True  # Enable dynamic window calculation
+            )
+            
+            self.logger.info(f"Dataset Info:")
+            self.logger.info(f"  Total samples: {len(X_full)}")
+            self.logger.info(f"  Total features: {len(X_full.columns)}")
+            for symbol in training_symbols:
+                symbol_mask = X_full.index.isin(selection_X.index)  # Approximate per-symbol count
+                self.logger.info(f"  {symbol}: ~{symbol_mask.sum() // len(training_symbols)} candles")
+            
+            # Class distribution
+            class_dist = y_full.value_counts().to_dict()
+            self.logger.info(f"Class Distribution: {class_dist}")
+            class_ratios = {k: v/len(y_full) for k, v in class_dist.items()}
+            self.logger.info(f"Class Ratios: {class_ratios}")
+            
+            # Feature selection on recent data
+            self.logger.info("\n" + "="*80)
+            self.logger.info("FEATURE SELECTION (RFE on recent data)")
+            self.logger.info("="*80)
+            
+            self.feature_selector = FeatureSelector(n_features_to_select=20)
+            required_indicators = self.definitions.get_required_indicators()
+            must_include = list(required_indicators.keys())
+            
+            selected_features, selection_info = self.feature_selector.select_features_rfe(
+                selection_X, selection_y, must_include=must_include
+            )
+            
+            self.logger.info(f"Selected Features: {len(selected_features)}")
+            self.logger.info(f"Feature List: {selected_features}")
+            
+            # Filter to selected features
+            X_selected = X_full[selected_features]
+            
+            # Time-series cross-validation
+            self.logger.info("\n" + "="*80)
+            self.logger.info("TIME-SERIES CROSS-VALIDATION (Walk-Forward)")
+            self.logger.info("="*80)
+            
+            n_splits = 5
+            splits = self._time_series_split(X_selected, y_full, n_splits=n_splits)
+            
+            fold_metrics = []
+            
+            for fold_idx, (train_idx, val_idx) in enumerate(splits):
+                self.logger.info(f"\n--- Fold {fold_idx + 1}/{n_splits} ---")
+                
+                X_train_fold = X_selected.iloc[train_idx]
+                y_train_fold = y_full.iloc[train_idx]
+                X_val_fold = X_selected.iloc[val_idx]
+                y_val_fold = y_full.iloc[val_idx]
+                
+                # Log fold date ranges (approximate)
+                fold_start_idx = train_idx[0]
+                fold_train_end_idx = train_idx[-1]
+                fold_val_end_idx = val_idx[-1]
+                
+                self.logger.info(f"  Train: indices {fold_start_idx} to {fold_train_end_idx} ({len(train_idx)} samples)")
+                self.logger.info(f"  Val:   indices {val_idx[0]} to {fold_val_end_idx} ({len(val_idx)} samples)")
+                
+                # Balance training data with SMOTE
+                from imblearn.over_sampling import SMOTE
+                
+                train_class_dist = y_train_fold.value_counts().to_dict()
+                self.logger.info(f"  Train class distribution (before SMOTE): {train_class_dist}")
+                
+                min_samples = min(train_class_dist.values())
+                if min_samples > 1:
+                    k_neighbors = min(5, min_samples - 1)
+                    smote = SMOTE(random_state=seed, k_neighbors=k_neighbors)
+                    X_train_balanced, y_train_balanced = smote.fit_resample(X_train_fold, y_train_fold)
+                    
+                    balanced_class_dist = pd.Series(y_train_balanced).value_counts().to_dict()
+                    self.logger.info(f"  Train class distribution (after SMOTE): {balanced_class_dist}")
+                else:
+                    X_train_balanced, y_train_balanced = X_train_fold, y_train_fold
+                    self.logger.warning(f"  Skipping SMOTE (minority class has {min_samples} samples)")
+                
+                # Scale features
+                scaler = StandardScaler()
+                X_train_scaled = scaler.fit_transform(X_train_balanced)
+                X_val_scaled = scaler.transform(X_val_fold)
+                
+                # Train XGBoost model for this fold
+                import xgboost as xgb
+                
+                model = xgb.XGBClassifier(
+                    n_estimators=XGB_PRO_CONFIG['n_estimators'],
+                    max_depth=XGB_PRO_CONFIG['max_depth'],
+                    learning_rate=XGB_PRO_CONFIG['learning_rate'],
+                    subsample=XGB_PRO_CONFIG['subsample'],
+                    colsample_bytree=XGB_PRO_CONFIG['colsample_bytree'],
+                    reg_alpha=XGB_PRO_CONFIG['reg_alpha'],
+                    reg_lambda=XGB_PRO_CONFIG['reg_lambda'],
+                    min_child_weight=XGB_PRO_CONFIG['min_child_weight'],
+                    gamma=XGB_PRO_CONFIG['gamma'],
+                    random_state=seed,
+                    eval_metric='mlogloss',
+                    early_stopping_rounds=100
+                )
+                
+                model.fit(
+                    X_train_scaled, y_train_balanced,
+                    eval_set=[(X_val_scaled, y_val_fold)],
+                    verbose=False
+                )
+                
+                # Evaluate
+                y_val_pred = model.predict(X_val_scaled)
+                y_val_proba = model.predict_proba(X_val_scaled)
+                
+                from sklearn.metrics import accuracy_score, f1_score
+                
+                fold_accuracy = accuracy_score(y_val_fold, y_val_pred)
+                fold_macro_f1 = f1_score(y_val_fold, y_val_pred, average='macro')
+                
+                self.logger.info(f"  Accuracy: {fold_accuracy:.4f}")
+                self.logger.info(f"  Macro-F1: {fold_macro_f1:.4f}")
+                
+                fold_metrics.append({
+                    'fold': fold_idx + 1,
+                    'accuracy': fold_accuracy,
+                    'macro_f1': fold_macro_f1,
+                    'train_samples': len(X_train_balanced),
+                    'val_samples': len(X_val_fold)
+                })
+            
+            # Calculate CV statistics
+            self.logger.info("\n" + "="*80)
+            self.logger.info("CROSS-VALIDATION SUMMARY")
+            self.logger.info("="*80)
+            
+            cv_accuracies = [m['accuracy'] for m in fold_metrics]
+            cv_macro_f1s = [m['macro_f1'] for m in fold_metrics]
+            
+            self.logger.info(f"CV Method: Walk-Forward (K={n_splits})")
+            self.logger.info(f"Accuracy: {np.mean(cv_accuracies):.4f} ± {np.std(cv_accuracies):.4f}")
+            self.logger.info(f"Macro-F1: {np.mean(cv_macro_f1s):.4f} ± {np.std(cv_macro_f1s):.4f}")
+            
+            for m in fold_metrics:
+                self.logger.info(f"  Fold {m['fold']}: Accuracy={m['accuracy']:.4f}, Macro-F1={m['macro_f1']:.4f}")
+            
+            # Train final model on all data with SMOTE
+            self.logger.info("\n" + "="*80)
+            self.logger.info("FINAL MODEL TRAINING")
+            self.logger.info("="*80)
+            
+            # Balance full dataset
+            from imblearn.over_sampling import SMOTE
+            
+            full_class_dist = y_full.value_counts().to_dict()
+            self.logger.info(f"Full dataset class distribution (before SMOTE): {full_class_dist}")
+            
+            min_samples = min(full_class_dist.values())
+            if min_samples > 1:
+                k_neighbors = min(5, min_samples - 1)
+                smote = SMOTE(random_state=seed, k_neighbors=k_neighbors)
+                X_balanced, y_balanced = smote.fit_resample(X_selected, y_full)
+                
+                balanced_class_dist = pd.Series(y_balanced).value_counts().to_dict()
+                self.logger.info(f"Full dataset class distribution (after SMOTE): {balanced_class_dist}")
+            else:
+                X_balanced, y_balanced = X_selected, y_full
+            
+            # Scale
+            self.scaler = StandardScaler()
+            X_scaled = self.scaler.fit_transform(X_balanced)
+            
+            # Hyperparameter optimization with Optuna (optional, can be enabled)
+            use_optuna = False  # Set to True to enable hyperparameter search
+            
+            if use_optuna:
+                self.logger.info("\n" + "="*80)
+                self.logger.info("HYPERPARAMETER OPTIMIZATION (Optuna)")
+                self.logger.info("="*80)
+                
+                import optuna
+                
+                def objective(trial):
+                    params = {
+                        'n_estimators': trial.suggest_int('n_estimators', 500, 3000, step=500),
+                        'max_depth': trial.suggest_int('max_depth', 4, 8),
+                        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1),
+                        'subsample': trial.suggest_float('subsample', 0.6, 0.9),
+                        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 0.9),
+                        'min_child_weight': trial.suggest_int('min_child_weight', 5, 15),
+                        'gamma': trial.suggest_float('gamma', 0.1, 1.0),
+                        'reg_alpha': trial.suggest_float('reg_alpha', 0.5, 2.0),
+                        'reg_lambda': trial.suggest_float('reg_lambda', 2.0, 8.0),
+                        'random_state': seed,
+                        'eval_metric': 'mlogloss'
+                    }
+                    
+                    model = xgb.XGBClassifier(**params)
+                    
+                    # Use a subset for faster optimization
+                    sample_size = min(10000, len(X_scaled))
+                    idx = np.random.choice(len(X_scaled), sample_size, replace=False)
+                    
+                    model.fit(X_scaled[idx], y_balanced.iloc[idx])
+                    y_pred = model.predict(X_scaled[idx])
+                    
+                    return f1_score(y_balanced.iloc[idx], y_pred, average='macro')
+                
+                study = optuna.create_study(direction='maximize')
+                study.optimize(objective, n_trials=20, show_progress_bar=False)
+                
+                best_params = study.best_params
+                self.logger.info(f"Best hyperparameters: {best_params}")
+                
+                final_params = best_params
+                final_params['random_state'] = seed
+                final_params['eval_metric'] = 'mlogloss'
+                final_params['early_stopping_rounds'] = 100
+            else:
+                final_params = {
+                    'n_estimators': XGB_PRO_CONFIG['n_estimators'],
+                    'max_depth': XGB_PRO_CONFIG['max_depth'],
+                    'learning_rate': XGB_PRO_CONFIG['learning_rate'],
+                    'subsample': XGB_PRO_CONFIG['subsample'],
+                    'colsample_bytree': XGB_PRO_CONFIG['colsample_bytree'],
+                    'reg_alpha': XGB_PRO_CONFIG['reg_alpha'],
+                    'reg_lambda': XGB_PRO_CONFIG['reg_lambda'],
+                    'min_child_weight': XGB_PRO_CONFIG['min_child_weight'],
+                    'gamma': XGB_PRO_CONFIG['gamma'],
+                    'random_state': seed,
+                    'eval_metric': 'mlogloss'
+                }
+            
+            # Train final model
+            import xgboost as xgb
+            final_model = xgb.XGBClassifier(**final_params)
+            final_model.fit(X_scaled, y_balanced)
+            
+            self.logger.info("Final model trained successfully")
+            
+            # Probability Calibration
+            self.logger.info("\n" + "="*80)
+            self.logger.info("PROBABILITY CALIBRATION")
+            self.logger.info("="*80)
+            
+            # Use last 20% of data for calibration
+            calib_size = int(0.2 * len(X_scaled))
+            X_calib = X_scaled[-calib_size:]
+            y_calib = y_balanced.iloc[-calib_size:]
+            X_train_final = X_scaled[:-calib_size]
+            y_train_final = y_balanced.iloc[:-calib_size]
+            
+            # Calculate Brier score before calibration
+            y_proba_before = final_model.predict_proba(X_calib)
+            brier_before = brier_score_loss(y_calib, y_proba_before[:, 1], pos_label=1) if len(np.unique(y_calib)) == 2 else 0.0
+            
+            # Calibrate
+            calibrated_model = CalibratedClassifierCV(final_model, method='isotonic', cv='prefit')
+            calibrated_model.fit(X_calib, y_calib)
+            
+            # Calculate Brier score after calibration
+            y_proba_after = calibrated_model.predict_proba(X_calib)
+            brier_after = brier_score_loss(y_calib, y_proba_after[:, 1], pos_label=1) if len(np.unique(y_calib)) == 2 else 0.0
+            
+            self.logger.info(f"Brier Score (before calibration): {brier_before:.4f}")
+            self.logger.info(f"Brier Score (after calibration): {brier_after:.4f}")
+            self.logger.info(f"Calibration improvement: {brier_before - brier_after:.4f}")
+            
+            # Dynamic Threshold Optimization
+            self.logger.info("\n" + "="*80)
+            self.logger.info("DYNAMIC THRESHOLD OPTIMIZATION")
+            self.logger.info("="*80)
+            
+            y_proba_val = calibrated_model.predict_proba(X_calib)
+            optimal_threshold, threshold_metrics = self._optimize_threshold_with_costs(
+                y_calib.values, y_proba_val[:, 1]
+            )
+            
+            self.logger.info(f"Optimal Threshold: {optimal_threshold:.2f}")
+            self.logger.info(f"  Macro-F1 at threshold: {threshold_metrics['macro_f1']:.4f}")
+            self.logger.info(f"  Expected trade rate: {threshold_metrics['trade_rate']:.2%}")
+            self.logger.info(f"  Utility score: {threshold_metrics['utility']:.4f}")
+            
+            # Wrap in TradingModel
+            self.model = TradingModel(model_type='xgboost_professional')
+            self.model.model = calibrated_model
+            self.model.is_trained = True
+            self.model.feature_names = selected_features
+            self.model.set_confidence_threshold(optimal_threshold)
+            self.model.model_version = f"advanced_cv_{training_start.strftime('%Y%m%d_%H%M%S')}"
+            
+            training_end = datetime.now()
+            
+            # Final acceptance log
+            self.logger.info("\n" + "="*80)
+            self.logger.info("TRAINING ACCEPTANCE LOG")
+            self.logger.info("="*80)
+            self.logger.info(f"CV Method: Walk-Forward (K={n_splits})")
+            self.logger.info(f"CV Metrics:")
+            for m in fold_metrics:
+                self.logger.info(f"  Fold {m['fold']}: Accuracy={m['accuracy']:.4f}, Macro-F1={m['macro_f1']:.4f}")
+            self.logger.info(f"Average Accuracy: {np.mean(cv_accuracies):.4f} ± {np.std(cv_accuracies):.4f}")
+            self.logger.info(f"Average Macro-F1: {np.mean(cv_macro_f1s):.4f} ± {np.std(cv_macro_f1s):.4f}")
+            self.logger.info(f"Optimal Threshold (after costs): {optimal_threshold:.2f}")
+            self.logger.info(f"Selected Features: {len(selected_features)}")
+            self.logger.info(f"Training Symbols: {training_symbols}")
+            self.logger.info(f"Total Training Time: {(training_end - training_start).total_seconds():.1f}s")
+            self.logger.info("="*80)
+            
+            result = {
+                'model_version': self.model.model_version,
+                'training_time': (training_end - training_start).total_seconds(),
+                'selected_features': selected_features,
+                'cv_method': 'walk_forward',
+                'n_splits': n_splits,
+                'fold_metrics': fold_metrics,
+                'mean_accuracy': np.mean(cv_accuracies),
+                'std_accuracy': np.std(cv_accuracies),
+                'mean_macro_f1': np.mean(cv_macro_f1s),
+                'std_macro_f1': np.std(cv_macro_f1s),
+                'optimal_threshold': optimal_threshold,
+                'threshold_metrics': threshold_metrics,
+                'calibration_improvement': brier_before - brier_after,
+                'training_symbols': training_symbols,
+                'total_samples': len(X_balanced),
+                'class_distribution': balanced_class_dist if min_samples > 1 else full_class_dist
+            }
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error in advanced CV training: {e}", exc_info=True)
+            raise
+

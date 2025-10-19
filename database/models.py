@@ -5,6 +5,56 @@ from datetime import datetime
 
 Base = declarative_base()
 
+class Wallet(Base):
+    """
+    Wallet/Account balance tracking for demo and live trading
+    """
+    __tablename__ = 'wallet'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_type = Column(String(10), nullable=False, index=True)  # 'demo' or 'live'
+    currency = Column(String(10), default='USDT', nullable=False)
+    
+    # Balance tracking
+    total_balance = Column(Float, default=0.0)  # Total balance
+    available_balance = Column(Float, default=0.0)  # Available for trading
+    locked_balance = Column(Float, default=0.0)  # Locked in open positions
+    
+    # Transaction tracking
+    total_deposits = Column(Float, default=0.0)
+    total_withdrawals = Column(Float, default=0.0)
+    total_pnl = Column(Float, default=0.0)  # Cumulative profit/loss
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    def __repr__(self):
+        return f"<Wallet(type='{self.account_type}', available={self.available_balance}, locked={self.locked_balance})>"
+
+class WalletTransaction(Base):
+    """
+    Track all wallet transactions (deposits, withdrawals, position opens/closes)
+    """
+    __tablename__ = 'wallet_transactions'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_type = Column(String(10), nullable=False, index=True)  # 'demo' or 'live'
+    transaction_type = Column(String(20), nullable=False)  # 'deposit', 'withdrawal', 'position_open', 'position_close'
+    
+    amount = Column(Float, nullable=False)  # Amount (positive or negative)
+    balance_before = Column(Float, nullable=False)
+    balance_after = Column(Float, nullable=False)
+    
+    # Related entities
+    position_id = Column(Integer, nullable=True)  # Link to position if applicable
+    description = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, default=func.now())
+    
+    def __repr__(self):
+        return f"<WalletTransaction(type='{self.transaction_type}', amount={self.amount})>"
+
 class Candle(Base):
     """
     Candlestick data model - matches the existing database structure

@@ -11,7 +11,7 @@ from trading.position_manager import PositionManager
 from trading.coinex_api import CoinExAPI
 from data.fetcher import DataFetcher
 from database.connection import db_connection
-from database.models import TradingSignal, Position, TradingMetrics
+from database.models import TradingSignal, Position, TradingMetrics, Wallet, WalletTransaction
 from config.settings import TRADING_CONFIG, ML_CONFIG
 from utils.network_utils import network_checker
 
@@ -26,7 +26,7 @@ class TradingEngine:
         
         # Initialize components
         self.api = CoinExAPI()
-        self.position_manager = PositionManager(self.api)
+        self.position_manager = PositionManager(self.api, trading_engine=self)  # Pass reference to self
         self.data_fetcher = DataFetcher(self.api)
         self.model = None
         self.trainer = ModelTrainer()
@@ -38,6 +38,10 @@ class TradingEngine:
         self.demo_balance = TRADING_CONFIG['demo_balance']
         self.used_balance = 0.0
         
+        # Network state management
+        self.network_connected = True
+        self.trading_paused_by_network = False
+        
         # Configuration
         self.training_symbols = TRADING_CONFIG['training_symbols']
         self.symbols = TRADING_CONFIG['symbols']  # Keep for backward compatibility
@@ -47,8 +51,118 @@ class TradingEngine:
         # Thread management
         self._stop_trading = False   # renamed to avoid conflict with method name
         
+        # Initialize wallet from database
+        self._initialize_wallet()
+        
         self.logger.info(f"Trading engine initialized (Demo: {demo_mode})")
         self.logger.info(f"[CONFIG] timeframe={self.timeframe} threshold={self.confidence_threshold}")
+    
+    def _initialize_wallet(self):
+        """Initialize or restore wallet from database"""
+        try:
+            session = db_connection.get_session()
+            account_type = 'demo' if self.demo_mode else 'live'
+            
+            # Try to get existing wallet
+            wallet = session.query(Wallet).filter_by(account_type=account_type).first()
+            
+            if wallet:
+                # Restore from database
+                self.demo_balance = wallet.total_balance
+                self.logger.info(f"Restored wallet from database: {account_type} balance = ${wallet.total_balance:.2f}")
+                
+                # Restore used_balance from open positions
+                open_positions = session.query(Position).filter_by(status='OPEN').all()
+                self.used_balance = sum(pos.entry_price * pos.quantity for pos in open_positions)
+                self.logger.info(f"Restored used_balance from {len(open_positions)} open positions: ${self.used_balance:.2f}")
+                
+                # Update wallet locked balance
+                wallet.locked_balance = self.used_balance
+                wallet.available_balance = wallet.total_balance - self.used_balance
+                session.commit()
+            else:
+                # Create new wallet
+                wallet = Wallet(
+                    account_type=account_type,
+                    total_balance=self.demo_balance,
+                    available_balance=self.demo_balance,
+                    locked_balance=0.0
+                )
+                session.add(wallet)
+                session.commit()
+                self.logger.info(f"Created new {account_type} wallet with ${self.demo_balance:.2f}")
+            
+            session.close()
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing wallet: {e}")
+            # Continue with in-memory values
+    
+    def _update_wallet_balance(self, amount: float, transaction_type: str, position_id: int = None, description: str = None):
+        """Update wallet balance in database"""
+        try:
+            session = db_connection.get_session()
+            account_type = 'demo' if self.demo_mode else 'live'
+            
+            wallet = session.query(Wallet).filter_by(account_type=account_type).first()
+            if not wallet:
+                self.logger.error(f"Wallet not found for {account_type}")
+                session.close()
+                return
+            
+            balance_before = wallet.total_balance
+            
+            # Update balances
+            if transaction_type in ['position_open']:
+                # Locking funds
+                wallet.locked_balance += abs(amount)
+                wallet.available_balance -= abs(amount)
+            elif transaction_type in ['position_close']:
+                # Unlocking funds and adding/subtracting PnL
+                wallet.locked_balance -= abs(amount)
+                wallet.available_balance += amount  # amount includes PnL
+            
+            balance_after = wallet.total_balance
+            
+            # Record transaction
+            transaction = WalletTransaction(
+                account_type=account_type,
+                transaction_type=transaction_type,
+                amount=amount,
+                balance_before=balance_before,
+                balance_after=balance_after,
+                position_id=position_id,
+                description=description
+            )
+            session.add(transaction)
+            session.commit()
+            session.close()
+            
+            self.logger.debug(f"Wallet updated: {transaction_type} ${amount:.2f}, Available: ${wallet.available_balance:.2f}")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating wallet: {e}")
+    
+    def _get_real_coinex_balance(self) -> float:
+        """Get real account balance from CoinEx API with validation"""
+        try:
+            if self.demo_mode:
+                return self.demo_balance - self.used_balance
+            
+            balance_info = self.api.get_balance()
+            if not balance_info:
+                self.logger.error("Failed to get balance from CoinEx API")
+                return 0.0
+            
+            # Extract USDT balance
+            usdt_balance = float(balance_info.get('USDT', {}).get('available', 0.0))
+            self.logger.info(f"Real CoinEx balance: ${usdt_balance:.2f} USDT")
+            return usdt_balance
+            
+        except Exception as e:
+            self.logger.error(f"Error getting real CoinEx balance: {e}")
+            return 0.0
+
 
     def start_system(self):
         """Start the complete trading system"""
@@ -205,23 +319,39 @@ class TradingEngine:
             try:
                 cycle_start = time.time()
                 
-                # Check network connectivity before processing
+                # CRITICAL: Check network connectivity before ALL operations
                 if not network_checker.is_connected():
-                    self.logger.warning("⏸️  Trading paused: No network connectivity")
-                    self.logger.info("Waiting for network connection to resume trading...")
+                    if not self.trading_paused_by_network:
+                        self.network_connected = False
+                        self.trading_paused_by_network = True
+                        self.logger.warning("⏸️  SYSTEM PAUSED: No network connectivity - ALL trading operations frozen")
+                        self.logger.info("ℹ️  Open positions will NOT be checked/closed until network is restored")
+                        self.logger.info("ℹ️  No new trades will be opened until network is restored")
                     
                     # Wait for connection to be restored
                     if network_checker.wait_for_connection(timeout=300, check_interval=30):
-                        self.logger.info("🔄 Network restored, resuming trading operations")
+                        self.logger.info("🔄 Network restored - verifying connections before resuming...")
                         # Re-test all connections after network restoration
-                        if not self._test_connections():
-                            self.logger.warning("Connection tests failed after network restoration, continuing to wait...")
+                        if self._test_connections():
+                            self.network_connected = True
+                            self.trading_paused_by_network = False
+                            self.logger.info("✅ SYSTEM RESUMED: All connections verified - trading operations active")
+                            # Give system a moment to stabilize prices
+                            time.sleep(5)
+                        else:
+                            self.logger.warning("❌ Connection tests failed after network restoration, remaining paused...")
                             time.sleep(60)
                             continue
                     else:
-                        self.logger.warning("Network timeout, continuing to wait...")
+                        self.logger.warning("⏳ Network still unavailable, remaining paused...")
                         time.sleep(60)
                         continue
+                
+                # Ensure we're in connected state before proceeding
+                if not self.network_connected or self.trading_paused_by_network:
+                    self.logger.warning("⏸️  System paused - skipping cycle")
+                    time.sleep(60)
+                    continue
                 
                 # Get active symbols for trading/analysis
                 active_symbols = self.data_fetcher.get_active_symbols()
@@ -359,7 +489,7 @@ class TradingEngine:
             return None
     
     def _process_buy_signal(self, symbol: str, confidence: float, current_price: float):
-        """Process BUY signal"""
+        """Process BUY signal with real balance check and wallet tracking"""
         try:
             # Check if we already have a position for this symbol
             existing_position = self._get_open_position(symbol)
@@ -379,6 +509,14 @@ class TradingEngine:
             if current_price is None or current_price <= 0:
                 self.logger.error(f"Invalid price for {symbol}: {current_price}. Cannot open position.")
                 return
+            
+            # CRITICAL: For live trading, check real CoinEx balance before proceeding
+            if not self.demo_mode:
+                real_balance = self._get_real_coinex_balance()
+                if real_balance <= 0:
+                    self.logger.error(f"Real CoinEx balance is ${real_balance:.2f}, cannot open position for {symbol}")
+                    return
+                self.logger.info(f"Real CoinEx balance verified: ${real_balance:.2f} USDT available")
             
             # Calculate position size
             position_size = self._calculate_position_size(symbol, current_price)
@@ -405,9 +543,24 @@ class TradingEngine:
                     # Update used balance
                     position_value = position_size * current_price
                     self.used_balance += position_value
-                    self.logger.info(f"Demo BUY order placed for {symbol}: {position_size} @ {current_price}")
+                    
+                    # Record in wallet database
+                    self._update_wallet_balance(
+                        amount=position_value,
+                        transaction_type='position_open',
+                        position_id=position_id,
+                        description=f"Opened LONG position for {symbol}"
+                    )
+                    
+                    self.logger.info(f"Demo BUY order placed for {symbol}: {position_size} @ {current_price}, "
+                                   f"Value: ${position_value:.2f}, Used: ${self.used_balance:.2f}")
             else:
-                # Live trading
+                # Live trading - verify balance one more time before order
+                real_balance = self._get_real_coinex_balance()
+                if order_value > real_balance:
+                    self.logger.error(f"Insufficient CoinEx balance: Need ${order_value:.2f}, Have ${real_balance:.2f}")
+                    return
+                
                 try:
                     # Place market buy order
                     order_result = self.api.place_order(
@@ -418,6 +571,18 @@ class TradingEngine:
                         position_id = self.position_manager.open_position(
                             symbol, 'LONG', position_size, current_price, confidence
                         )
+                        
+                        if position_id:
+                            position_value = position_size * current_price
+                            
+                            # Record in wallet database
+                            self._update_wallet_balance(
+                                amount=position_value,
+                                transaction_type='position_open',
+                                position_id=position_id,
+                                description=f"Opened LONG position for {symbol}"
+                            )
+                            
                         self.logger.info(f"Live BUY order placed for {symbol}: {position_size} @ {current_price}")
                 
                 except Exception as e:
