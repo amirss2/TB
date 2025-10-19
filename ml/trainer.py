@@ -49,19 +49,107 @@ class ModelTrainer:
         """Get current training progress"""
         return self.training_progress.copy()
     
+    def _calculate_dynamic_selection_window(self, symbols: List[str]) -> int:
+        """
+        Calculate dynamic data window for RFE based on indicator requirements.
+        
+        Formula: N_required = L_max + H + E + B
+        where:
+        - L_max: Maximum lookback period among all indicators
+        - H: Horizon for Triple-Barrier labeling (from config)
+        - E: Purge/embargo candles for CV (2-4 candles)
+        - B: Safety buffer (50 candles)
+        
+        Returns:
+            Number of candles required for RFE selection window
+        """
+        try:
+            # Get all indicator definitions
+            all_indicators = self.definitions.get_all_indicators()
+            
+            # Calculate maximum lookback among all indicators
+            max_lookback = 0
+            indicator_lookbacks = {}
+            
+            for name, info in all_indicators.items():
+                params = info.get('parameters', {})
+                lookback = 0
+                
+                # Extract lookback/period parameter (varies by indicator)
+                for param_name, param_value in params.items():
+                    param_lower = param_name.lower()
+                    if any(key in param_lower for key in ['period', 'length', 'timeperiod', 'window', 'span']):
+                        if isinstance(param_value, (int, float)):
+                            lookback = max(lookback, int(param_value))
+                
+                # Special handling for known indicators with specific lookbacks
+                if 'ichimoku' in name.lower():
+                    lookback = max(lookback, 52)  # Ichimoku uses 52-period
+                elif 'ema' in name.lower() or 'sma' in name.lower():
+                    # EMAs/SMAs typically use period parameter
+                    if 'period' in params:
+                        lookback = max(lookback, int(params['period']))
+                
+                indicator_lookbacks[name] = lookback
+                max_lookback = max(max_lookback, lookback)
+            
+            # Get horizon from labeling config
+            if LABELING_CONFIG['method'] == 'triple_barrier':
+                horizon = LABELING_CONFIG['triple_barrier']['time_horizon_candles']
+            else:
+                horizon = 2  # Default horizon
+            
+            # Set purge/embargo candles for time-series CV
+            embargo_candles = 3  # Conservative estimate
+            
+            # Safety buffer
+            buffer_candles = 50
+            
+            # Calculate required window
+            N_required = max_lookback + horizon + embargo_candles + buffer_candles
+            
+            # Log calculation details
+            self.logger.info("=" * 80)
+            self.logger.info("DYNAMIC SELECTION WINDOW CALCULATION")
+            self.logger.info("=" * 80)
+            self.logger.info(f"Max indicator lookback (L_max): {max_lookback}")
+            self.logger.info(f"Triple-Barrier horizon (H): {horizon}")
+            self.logger.info(f"Purge/embargo candles (E): {embargo_candles}")
+            self.logger.info(f"Safety buffer (B): {buffer_candles}")
+            self.logger.info(f"N_required = {max_lookback} + {horizon} + {embargo_candles} + {buffer_candles} = {N_required}")
+            self.logger.info("=" * 80)
+            
+            # Log top indicators by lookback
+            sorted_lookbacks = sorted(indicator_lookbacks.items(), key=lambda x: x[1], reverse=True)
+            self.logger.info("Top indicators by lookback period:")
+            for name, lb in sorted_lookbacks[:10]:
+                if lb > 0:
+                    self.logger.info(f"  {name}: {lb} candles")
+            
+            return N_required
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating dynamic selection window: {e}")
+            # Fallback to configured value
+            fallback = FEATURE_SELECTION_CONFIG.get('selection_window_4h', 800)
+            self.logger.warning(f"Using fallback selection_window_4h: {fallback}")
+            return fallback
+    
     def prepare_training_data(self, symbols: List[str] = None, 
-                            train_samples: int = None) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+                            train_samples: int = None,
+                            use_dynamic_window: bool = True) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
         """
         Prepare training data from database with indicators, returning separate full and selection datasets
         
         Args:
             symbols: List of symbols to include
             train_samples: Number of samples to use for training
+            use_dynamic_window: If True, calculate selection window dynamically based on indicators
             
         Returns:
             Tuple of (X_full, y_full, selection_X, selection_y)
             - X_full, y_full: Full training dataset (up to max_4h_training_candles)
-            - selection_X, selection_y: Recent subset for feature selection (last max_4h_selection_candles)
+            - selection_X, selection_y: Recent subset for feature selection (last selection_limit candles)
         """
         try:
             self.training_progress.update({
@@ -73,10 +161,17 @@ class ModelTrainer:
             symbols = symbols or TRADING_CONFIG['training_symbols']
             train_samples = train_samples or ML_CONFIG['training_data_size']
             
-            # Get configuration for 4h timeframe limits
-            # Use selection_window_4h from FEATURE_SELECTION_CONFIG when available
-            selection_limit = FEATURE_SELECTION_CONFIG.get('selection_window_4h', 
-                                                         DATA_CONFIG.get('max_4h_selection_candles', 800))
+            # Calculate dynamic selection window if requested
+            if use_dynamic_window:
+                selection_limit = self._calculate_dynamic_selection_window(symbols)
+                # Store calculated value for logging
+                self.logger.info(f"Using dynamically calculated selection_limit: {selection_limit} (4h candles)")
+            else:
+                # Use configured static value
+                selection_limit = FEATURE_SELECTION_CONFIG.get('selection_window_4h', 
+                                                             DATA_CONFIG.get('max_4h_selection_candles', 800))
+                self.logger.info(f"Using configured selection_limit: {selection_limit} (4h candles)")
+            
             training_limit = DATA_CONFIG.get('max_4h_training_candles', 2000)
             use_all_history = DATA_CONFIG.get('use_all_history', False)
             
@@ -986,15 +1081,17 @@ class ModelTrainer:
             self.logger.error(f"Error evaluating model: {e}")
             raise
     
-    def _time_series_split(self, X: pd.DataFrame, y: pd.Series, n_splits: int = 5) -> List[Tuple[np.ndarray, np.ndarray]]:
+    def _time_series_split(self, X: pd.DataFrame, y: pd.Series, n_splits: int = 5, 
+                           embargo_candles: int = 3) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
-        Time-series based train/validation split (no shuffle, chronological order)
-        Implements Walk-Forward cross-validation
+        Time-series based train/validation split with purge and embargo
+        Implements Walk-Forward cross-validation with gap to prevent data leakage
         
         Args:
             X: Feature data
             y: Labels
             n_splits: Number of folds
+            embargo_candles: Number of candles to skip between train and validation
             
         Returns:
             List of (train_idx, val_idx) tuples
@@ -1002,14 +1099,37 @@ class ModelTrainer:
         n_samples = len(X)
         fold_size = n_samples // (n_splits + 1)
         
+        self.logger.info(f"Time-Series CV Configuration:")
+        self.logger.info(f"  Total samples: {n_samples}")
+        self.logger.info(f"  Number of folds: {n_splits}")
+        self.logger.info(f"  Fold size: {fold_size} samples")
+        self.logger.info(f"  Embargo (gap): {embargo_candles} candles")
+        self.logger.info(f"  NO SHUFFLING - Chronological order maintained")
+        
         splits = []
         for i in range(n_splits):
-            train_end = fold_size * (i + 2)
-            val_start = fold_size * (i + 1)
-            val_end = train_end
+            # Calculate fold boundaries
+            train_start = 0
+            train_end = fold_size * (i + 1)
             
-            train_idx = np.arange(0, val_start)
+            # Add embargo gap to prevent data leakage
+            val_start = train_end + embargo_candles
+            val_end = train_end + fold_size
+            
+            # Ensure we don't exceed dataset boundaries
+            if val_end > n_samples:
+                val_end = n_samples
+            
+            if val_start >= val_end:
+                self.logger.warning(f"Skipping fold {i+1}: insufficient validation samples after embargo")
+                continue
+            
+            train_idx = np.arange(train_start, train_end)
             val_idx = np.arange(val_start, val_end)
+            
+            self.logger.info(f"Fold {i+1}: Train[{train_start}:{train_end}] ({len(train_idx)} samples), "
+                           f"Gap[{train_end}:{val_start}] ({embargo_candles} candles), "
+                           f"Val[{val_start}:{val_end}] ({len(val_idx)} samples)")
             
             splits.append((train_idx, val_idx))
         
@@ -1107,7 +1227,11 @@ class ModelTrainer:
             training_symbols = ['BTCUSDT', 'ETHUSDT', 'DOGEUSDT', 'SOLUSDT']
             self.logger.info(f"Training symbols: {training_symbols}")
             
-            X_full, y_full, selection_X, selection_y = self.prepare_training_data(symbols=training_symbols)
+            # Use dynamic window calculation for RFE selection subset
+            X_full, y_full, selection_X, selection_y = self.prepare_training_data(
+                symbols=training_symbols, 
+                use_dynamic_window=True  # Enable dynamic window calculation
+            )
             
             self.logger.info(f"Dataset Info:")
             self.logger.info(f"  Total samples: {len(X_full)}")
