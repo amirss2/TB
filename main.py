@@ -237,15 +237,28 @@ class TradingBotApplication:
     
     def check_system_health(self):
         try:
+            # Basic database connection check
             if not db_connection.test_connection():
                 self.logger.error("Database connection lost")
                 self.log_system_event('ERROR', 'health', 'Database connection lost')
+            
+            # Trading engine health check
             if self.trading_engine:
                 status = self.trading_engine.get_system_status()
                 if not status.get('is_running', False) and self.running:
                     self.logger.warning("Trading engine not running")
-            if datetime.now().minute % 15 == 0:
-                self.logger.debug("System health check completed")
+                
+                # Comprehensive health check every X minutes (configurable)
+                from config.settings import TRADING_CONFIG
+                health_check_interval = TRADING_CONFIG.get('health_check_interval_minutes', 15)
+                
+                current_minute = datetime.now().minute
+                if current_minute % health_check_interval == 0:
+                    # Only run once per interval to avoid duplicate logs
+                    if not hasattr(self, '_last_health_check_minute') or self._last_health_check_minute != current_minute:
+                        self._last_health_check_minute = current_minute
+                        self.trading_engine.comprehensive_health_check()
+            
         except Exception as e:
             self.logger.error(f"Health check failed: {e}")
     

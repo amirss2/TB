@@ -43,6 +43,7 @@ TRADING_CONFIG = {
     'risk_per_trade': 0.5,  # 50% of portfolio per trade as requested by user
     'min_order_value': 5.0,  # Minimum order value in USD to prevent dust orders
     'use_coinmarketcap_symbols': True,  # Enable CoinMarketCap-based symbol selection
+    'health_check_interval_minutes': 15,  # Health check every X minutes
     
     # Performance Enhancement Configuration
     'use_websocket': True,

@@ -58,8 +58,12 @@ class TradingEngine:
         self.logger.info(f"[CONFIG] timeframe={self.timeframe} threshold={self.confidence_threshold}")
     
     def _initialize_wallet(self):
-        """Initialize or restore wallet from database"""
+        """Initialize or restore wallet from database with idempotent state recovery"""
         try:
+            self.logger.info("=" * 80)
+            self.logger.info("INITIALIZING/RESTORING WALLET STATE")
+            self.logger.info("=" * 80)
+            
             session = db_connection.get_session()
             account_type = 'demo' if self.demo_mode else 'live'
             
@@ -67,21 +71,56 @@ class TradingEngine:
             wallet = session.query(Wallet).filter_by(account_type=account_type).first()
             
             if wallet:
-                # Restore from database
+                # Restore from database (idempotent recovery)
                 self.demo_balance = wallet.total_balance
-                self.logger.info(f"Restored wallet from database: {account_type} balance = ${wallet.total_balance:.2f}")
+                self.logger.info(f"✓ Restored wallet from database: {account_type} balance = ${wallet.total_balance:.2f}")
                 
-                # Restore used_balance from open positions
+                # Restore used_balance from open positions (idempotent)
                 open_positions = session.query(Position).filter_by(status='OPEN').all()
                 self.used_balance = sum(pos.entry_price * pos.quantity for pos in open_positions)
-                self.logger.info(f"Restored used_balance from {len(open_positions)} open positions: ${self.used_balance:.2f}")
+                self.logger.info(f"✓ Restored used_balance from {len(open_positions)} open positions: ${self.used_balance:.2f}")
                 
-                # Update wallet locked balance
+                # Log details of open positions
+                if open_positions:
+                    self.logger.info("   Open positions found:")
+                    for pos in open_positions:
+                        position_value = pos.entry_price * pos.quantity
+                        self.logger.info(f"   - {pos.symbol}: {pos.side}, Entry=${pos.entry_price:.6f}, "
+                                       f"Qty={pos.quantity}, Value=${position_value:.2f}")
+                
+                # Update wallet locked balance (reconciliation)
                 wallet.locked_balance = self.used_balance
                 wallet.available_balance = wallet.total_balance - self.used_balance
+                
+                # Ensure available_balance is never negative
+                if wallet.available_balance < 0:
+                    self.logger.warning(f"⚠️  Available balance would be negative ({wallet.available_balance:.2f}), clamping to 0")
+                    wallet.available_balance = 0
+                
                 session.commit()
+                
+                self.logger.info(f"✓ Wallet reconciled: Total=${wallet.total_balance:.2f}, "
+                               f"Available=${wallet.available_balance:.2f}, Locked=${wallet.locked_balance:.2f}")
+                
+                # Run health check to verify state
+                session.close()
+                session = db_connection.get_session()
+                wallet = session.query(Wallet).filter_by(account_type=account_type).first()
+                transactions = session.query(WalletTransaction).filter_by(account_type=account_type).all()
+                
+                # Quick reconciliation check
+                initial_balance = TRADING_CONFIG['demo_balance'] if account_type == 'demo' else 0.0
+                transaction_sum = sum(t.amount for t in transactions)
+                expected_balance = initial_balance + transaction_sum
+                balance_match = abs(expected_balance - wallet.total_balance) < 0.01
+                
+                if balance_match:
+                    self.logger.info(f"✅ RECONCILIATION: PASSED - Balance matches transaction history")
+                else:
+                    self.logger.warning(f"⚠️  RECONCILIATION: Difference of ${wallet.total_balance - expected_balance:.2f} detected")
+                
             else:
-                # Create new wallet
+                # Create new wallet (first-time initialization)
                 wallet = Wallet(
                     account_type=account_type,
                     total_balance=self.demo_balance,
@@ -90,12 +129,13 @@ class TradingEngine:
                 )
                 session.add(wallet)
                 session.commit()
-                self.logger.info(f"Created new {account_type} wallet with ${self.demo_balance:.2f}")
+                self.logger.info(f"✓ Created new {account_type} wallet with ${self.demo_balance:.2f}")
             
             session.close()
+            self.logger.info("=" * 80)
             
         except Exception as e:
-            self.logger.error(f"Error initializing wallet: {e}")
+            self.logger.error(f"Error initializing wallet: {e}", exc_info=True)
             # Continue with in-memory values
     
     def _update_wallet_balance(self, amount: float, transaction_type: str, position_id: int = None, description: str = None):
@@ -230,21 +270,69 @@ class TradingEngine:
         self.logger.info("Fallback model configured for demo mode")
     
     def stop_system(self):
-        """Stop the complete trading system"""
+        """Stop the complete trading system with graceful shutdown"""
         try:
-            self.logger.info("Stopping trading system...")
-            # Stop trading loop
+            self.logger.info("=" * 80)
+            self.logger.info("INITIATING GRACEFUL SHUTDOWN")
+            self.logger.info("=" * 80)
+            
+            # 1. Save current state before shutdown
+            self.logger.info("Saving system state...")
+            self._save_shutdown_state()
+            
+            # 2. Stop trading loop
+            self.logger.info("Stopping trading loop...")
             self._stop_trading = True
             if self.trading_thread and self.trading_thread.is_alive():
                 self.trading_thread.join(timeout=10)
-            # Stop position monitoring
+            
+            # 3. Stop position monitoring
+            self.logger.info("Stopping position monitoring...")
             self.position_manager.stop_position_monitoring()
-            # Stop data fetching
+            
+            # 4. Stop data fetching
+            self.logger.info("Stopping data fetching...")
             self.data_fetcher.stop_real_time_updates()
+            
+            # 5. Final health check before shutdown
+            self.logger.info("Running final health check...")
+            health_report = self.comprehensive_health_check()
+            
+            # 6. Update system state
             self.is_running = False
-            self.logger.info("Trading system stopped")
+            
+            self.logger.info("=" * 80)
+            self.logger.info("GRACEFUL SHUTDOWN COMPLETED")
+            self.logger.info(f"System stopped with {health_report.get('positions', {}).get('open_count', 0)} open positions")
+            self.logger.info("=" * 80)
+            
         except Exception as e:
-            self.logger.error(f"Error stopping trading system: {e}")
+            self.logger.error(f"Error during graceful shutdown: {e}", exc_info=True)
+    
+    def _save_shutdown_state(self):
+        """Save critical state before shutdown for resume capability"""
+        try:
+            session = db_connection.get_session()
+            account_type = 'demo' if self.demo_mode else 'live'
+            
+            # Update wallet with current state
+            wallet = session.query(Wallet).filter_by(account_type=account_type).first()
+            if wallet:
+                # Recalculate locked balance from open positions
+                open_positions = session.query(Position).filter_by(status='OPEN').all()
+                wallet.locked_balance = sum(pos.entry_price * pos.quantity for pos in open_positions)
+                wallet.available_balance = wallet.total_balance - wallet.locked_balance
+                
+                self.logger.info(f"State saved: {len(open_positions)} open positions, "
+                               f"${wallet.locked_balance:.2f} locked, ${wallet.available_balance:.2f} available")
+                
+                session.commit()
+            
+            session.close()
+            
+        except Exception as e:
+            self.logger.error(f"Error saving shutdown state: {e}", exc_info=True)
+    
     
     def train_model(self, retrain: bool = False) -> Dict[str, Any]:
         """Train or retrain the AI model"""
@@ -497,12 +585,40 @@ class TradingEngine:
                 self.logger.info(f"Already have open position for {symbol}, skipping BUY signal")
                 return
             
-            # CRITICAL: Enforce max_positions limit
+            # CRITICAL: Enforce max_positions limit with detailed logging
             open_positions_count = self._get_open_positions_count()
             max_positions = TRADING_CONFIG['max_positions']
             if open_positions_count >= max_positions:
-                self.logger.warning(f"Max positions limit reached ({open_positions_count}/{max_positions}). "
-                                  f"Skipping BUY signal for {symbol}. Close existing positions first.")
+                # Get current open positions for comparison
+                session = db_connection.get_session()
+                current_positions = session.query(Position).filter_by(status='OPEN').all()
+                session.close()
+                
+                # Log detailed rejection information
+                self.logger.warning("=" * 80)
+                self.logger.warning(f"⚠️  MAX POSITIONS LIMIT REACHED ({open_positions_count}/{max_positions})")
+                self.logger.warning(f"REJECTED SIGNAL:")
+                self.logger.warning(f"   Symbol: {symbol}")
+                self.logger.warning(f"   Type: BUY (LONG)")
+                self.logger.warning(f"   Confidence: {confidence:.3f} ({confidence*100:.1f}%)")
+                self.logger.warning(f"   Price: ${current_price:.6f}")
+                self.logger.warning(f"   Reason: All position slots occupied")
+                self.logger.warning("")
+                self.logger.warning("CURRENT OPEN POSITIONS:")
+                for idx, pos in enumerate(current_positions, 1):
+                    # Get current price for each position
+                    pos_current_price = self.position_manager._get_current_price(pos.symbol)
+                    if pos_current_price:
+                        pnl_info = self.position_manager._calculate_pnl(pos, pos_current_price)
+                        self.logger.warning(f"   {idx}. {pos.symbol}: {pos.side}, Entry=${pos.entry_price:.6f}, "
+                                          f"Current=${pos_current_price:.6f}, Net PnL=${pnl_info['pnl']:.4f} "
+                                          f"({pnl_info['pnl_percentage']:.2f}%)")
+                    else:
+                        self.logger.warning(f"   {idx}. {pos.symbol}: {pos.side}, Entry=${pos.entry_price:.6f}, "
+                                          f"Current=N/A")
+                self.logger.warning("")
+                self.logger.warning("ACTION REQUIRED: Close existing positions to free up slots for new signals")
+                self.logger.warning("=" * 80)
                 return
             
             # Validate price is not zero or invalid
@@ -813,3 +929,115 @@ class TradingEngine:
         except Exception as e:
             self.logger.error(f"Error getting trading summary: {e}")
             return {}
+    
+    def comprehensive_health_check(self) -> Dict[str, Any]:
+        """
+        Comprehensive system health check that reports:
+        - Number of OPEN positions
+        - Wallet balance breakdown (total/available/locked)
+        - Total unrealized PnL (after fees)
+        - Wallet reconciliation status
+        """
+        try:
+            self.logger.info("=" * 80)
+            self.logger.info("SYSTEM HEALTH CHECK")
+            self.logger.info("=" * 80)
+            
+            # 1. Get wallet information
+            session = db_connection.get_session()
+            account_type = 'demo' if self.demo_mode else 'live'
+            wallet = session.query(Wallet).filter_by(account_type=account_type).first()
+            
+            # 2. Get open positions
+            open_positions = session.query(Position).filter_by(status='OPEN').all()
+            open_positions_count = len(open_positions)
+            
+            # 3. Calculate total unrealized PnL (with all fees)
+            total_unrealized_pnl = 0.0
+            position_details = []
+            for pos in open_positions:
+                current_price = self.position_manager._get_current_price(pos.symbol)
+                if current_price:
+                    pnl_info = self.position_manager._calculate_pnl(pos, current_price)
+                    total_unrealized_pnl += pnl_info['pnl']  # Net PnL after all costs
+                    position_details.append({
+                        'symbol': pos.symbol,
+                        'side': pos.side,
+                        'entry_price': pos.entry_price,
+                        'current_price': current_price,
+                        'quantity': pos.quantity,
+                        'net_pnl': pnl_info['pnl'],
+                        'gross_pnl': pnl_info['gross_pnl'],
+                        'total_costs': pnl_info['total_costs']
+                    })
+            
+            session.close()
+            
+            # 4. Get wallet reconciliation
+            reconciliation = self.position_manager.wallet_health_check()
+            
+            # 5. Prepare health check report
+            health_report = {
+                'timestamp': datetime.now().isoformat(),
+                'account_type': account_type,
+                'positions': {
+                    'open_count': open_positions_count,
+                    'max_positions': TRADING_CONFIG['max_positions'],
+                    'available_slots': TRADING_CONFIG['max_positions'] - open_positions_count,
+                    'details': position_details
+                },
+                'wallet': {
+                    'total_balance': wallet.total_balance if wallet else 0.0,
+                    'available_balance': wallet.available_balance if wallet else 0.0,
+                    'locked_balance': wallet.locked_balance if wallet else 0.0,
+                    'total_pnl': wallet.total_pnl if wallet else 0.0
+                },
+                'pnl': {
+                    'unrealized_pnl': total_unrealized_pnl,
+                    'realized_pnl': wallet.total_pnl if wallet else 0.0,
+                    'total_pnl': (wallet.total_pnl if wallet else 0.0) + total_unrealized_pnl
+                },
+                'reconciliation': reconciliation,
+                'system': {
+                    'is_running': self.is_running,
+                    'model_trained': self.model_trained,
+                    'demo_mode': self.demo_mode
+                }
+            }
+            
+            # 6. Log detailed report
+            self.logger.info(f"📊 POSITIONS: {open_positions_count}/{TRADING_CONFIG['max_positions']} OPEN "
+                           f"({TRADING_CONFIG['max_positions'] - open_positions_count} slots available)")
+            
+            if position_details:
+                self.logger.info("   Position Details:")
+                for pos in position_details:
+                    self.logger.info(f"   - {pos['symbol']}: {pos['side']}, "
+                                   f"Entry=${pos['entry_price']:.6f}, Current=${pos['current_price']:.6f}, "
+                                   f"Net PnL=${pos['net_pnl']:.4f} (Gross=${pos['gross_pnl']:.4f}, Costs=${pos['total_costs']:.4f})")
+            
+            self.logger.info(f"💰 WALLET: Total=${wallet.total_balance if wallet else 0:.2f}, "
+                           f"Available=${wallet.available_balance if wallet else 0:.2f}, "
+                           f"Locked=${wallet.locked_balance if wallet else 0:.2f}")
+            
+            self.logger.info(f"📈 PnL: Unrealized=${total_unrealized_pnl:.2f}, "
+                           f"Realized=${wallet.total_pnl if wallet else 0:.2f}, "
+                           f"Total=${(wallet.total_pnl if wallet else 0.0) + total_unrealized_pnl:.2f}")
+            
+            if reconciliation['status'] == 'HEALTHY':
+                self.logger.info(f"✅ RECONCILIATION: PASSED - Wallet balances are consistent")
+            else:
+                self.logger.warning(f"⚠️  RECONCILIATION: FAILED - {reconciliation.get('status', 'UNKNOWN')}")
+                if 'reconciliation' in reconciliation:
+                    self.logger.warning(f"   Balance difference: ${reconciliation['reconciliation'].get('difference', 0):.2f}")
+            
+            self.logger.info("=" * 80)
+            
+            return health_report
+            
+        except Exception as e:
+            self.logger.error(f"Error in comprehensive health check: {e}", exc_info=True)
+            return {
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
