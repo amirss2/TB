@@ -1,8 +1,9 @@
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, scoped_session
 import os
 import logging
 from config.settings import DATABASE_CONFIG
+from contextlib import contextmanager
 
 # Try to import PyMySQL, fallback gracefully if not available
 try:
@@ -17,6 +18,7 @@ class DatabaseConnection:
     def __init__(self):
         self.engine = None
         self.Session = None
+        self.scoped_session_factory = None
         self.connection_string = self._build_connection_string()
         
     def _build_connection_string(self):
@@ -53,7 +55,9 @@ class DatabaseConnection:
                         conn.execute(text("SELECT 1"))
                         
                     logging.info("MySQL database engine initialized successfully")
-                    self.Session = sessionmaker(bind=self.engine)
+                    # Use scoped_session for thread-safe session management
+                    session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
+                    self.Session = scoped_session(session_factory)
                     return True
                     
                 except Exception as mysql_error:
@@ -73,7 +77,9 @@ class DatabaseConnection:
                 conn.execute(text("SELECT 1"))
                 
             logging.info("SQLite database engine initialized successfully")
-            self.Session = sessionmaker(bind=self.engine)
+            # Use scoped_session for thread-safe session management
+            session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
+            self.Session = scoped_session(session_factory)
             return True
                 
         except Exception as e:
@@ -81,10 +87,27 @@ class DatabaseConnection:
             return False
     
     def get_session(self):
-        """Get a new database session"""
+        """Get a thread-safe scoped session"""
         if not self.Session:
             self.init_engine()
         return self.Session()
+    
+    @contextmanager
+    def get_transaction_session(self):
+        """
+        Context manager for transactional database operations
+        Ensures proper commit/rollback and session cleanup
+        """
+        session = self.get_session()
+        try:
+            yield session
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logging.error(f"Transaction failed and was rolled back: {e}")
+            raise
+        finally:
+            session.close()
     
     def test_connection(self):
         """Test database connection"""

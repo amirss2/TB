@@ -5,7 +5,7 @@ import threading
 import time
 
 from database.connection import db_connection
-from database.models import Position
+from database.models import Position, Wallet, WalletTransaction
 from trading.coinex_api import CoinExAPI
 from config.settings import TP_SL_CONFIG, TRADING_CONFIG, FEE_CONFIG
 
@@ -32,7 +32,7 @@ class PositionManager:
     def open_position(self, symbol: str, side: str, quantity: float, 
                      entry_price: float, signal_confidence: float) -> Optional[int]:
         """
-        Open a new trading position
+        Open a new trading position with atomic wallet transaction
         
         Args:
             symbol: Trading symbol
@@ -49,36 +49,70 @@ class PositionManager:
             
             # Calculate TP/SL levels
             tp_sl_levels = self._calculate_tp_sl_levels(entry_price, side)
+            position_value = entry_price * quantity
             
             # Debug logging for TP/SL calculation
             self.logger.info(f"TP/SL levels calculated for {symbol}: "
-                           f"Entry=${entry_price:.6f}, "
+                           f"Entry=${entry_price:.6f}, Value=${position_value:.2f}, "
                            f"SL=${tp_sl_levels['initial_sl']:.6f} (-3%), "
                            f"TP1=${tp_sl_levels['tp1']:.6f} (+3%), "
                            f"TP2=${tp_sl_levels['tp2']:.6f} (+6%), "
                            f"TP3=${tp_sl_levels['tp3']:.6f} (+10%)")
             
-            # Create position in database
-            session = db_connection.get_session()
-            
-            position = Position(
-                symbol=symbol,
-                side=side,
-                entry_price=entry_price,
-                quantity=quantity,
-                current_price=entry_price,
-                initial_sl=tp_sl_levels['initial_sl'],
-                current_sl=tp_sl_levels['initial_sl'],
-                tp1_price=tp_sl_levels['tp1'],
-                tp2_price=tp_sl_levels['tp2'],
-                tp3_price=tp_sl_levels['tp3'],
-                status='OPEN'
-            )
-            
-            session.add(position)
-            session.commit()
-            position_id = position.id
-            session.close()
+            # Use atomic transaction to create position and update wallet
+            with db_connection.get_transaction_session() as session:
+                # Create position
+                position = Position(
+                    symbol=symbol,
+                    side=side,
+                    entry_price=entry_price,
+                    quantity=quantity,
+                    current_price=entry_price,
+                    initial_sl=tp_sl_levels['initial_sl'],
+                    current_sl=tp_sl_levels['initial_sl'],
+                    tp1_price=tp_sl_levels['tp1'],
+                    tp2_price=tp_sl_levels['tp2'],
+                    tp3_price=tp_sl_levels['tp3'],
+                    status='OPEN'
+                )
+                
+                session.add(position)
+                session.flush()  # Get position ID before commit
+                position_id = position.id
+                
+                # Update wallet within same transaction
+                account_type = 'demo' if (self.trading_engine and self.trading_engine.demo_mode) else 'live'
+                wallet = session.query(Wallet).filter_by(account_type=account_type).with_for_update().first()
+                
+                if wallet:
+                    balance_before = wallet.available_balance
+                    
+                    # Lock funds for position
+                    wallet.locked_balance += position_value
+                    wallet.available_balance -= position_value
+                    
+                    # Ensure available_balance doesn't go negative
+                    if wallet.available_balance < 0:
+                        self.logger.error(f"Insufficient balance: need ${position_value:.2f}, have ${balance_before:.2f}")
+                        raise ValueError("Insufficient available balance")
+                    
+                    balance_after = wallet.available_balance
+                    
+                    # Record wallet transaction
+                    transaction = WalletTransaction(
+                        account_type=account_type,
+                        transaction_type='position_open',
+                        amount=-position_value,  # Negative for locked funds
+                        balance_before=balance_before,
+                        balance_after=balance_after,
+                        position_id=position_id,
+                        description=f"Opened {side} position for {symbol}: {quantity} @ ${entry_price:.6f}"
+                    )
+                    session.add(transaction)
+                    
+                    self.logger.info(f"Wallet updated: Locked ${position_value:.2f}, Available: ${balance_before:.2f} → ${balance_after:.2f}")
+                
+                # Commit happens automatically via context manager
             
             # Add to active positions for monitoring
             self.active_positions[position_id] = {
@@ -94,73 +128,111 @@ class PositionManager:
             if not self.monitoring_thread or not self.monitoring_thread.is_alive():
                 self.start_position_monitoring()
             
-            self.logger.info(f"Position opened successfully: ID {position_id}")
+            self.logger.info(f"✓ Position opened successfully: ID {position_id}")
             return position_id
             
         except Exception as e:
-            self.logger.error(f"Error opening position: {e}")
+            self.logger.error(f"Error opening position: {e}", exc_info=True)
             return None
     
     def close_position(self, position_id: int, reason: str = "Manual close") -> bool:
-        """Close a position and free up allocated balance"""
+        """
+        Close a position and free up allocated balance
+        Uses atomic transaction to ensure data consistency
+        """
+        # Idempotency key to prevent double closing
+        close_key = f"close_{position_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        if not hasattr(self, '_closed_positions'):
+            self._closed_positions = set()
+        
+        if position_id in self._closed_positions:
+            self.logger.warning(f"Position {position_id} already closed, skipping duplicate close")
+            return False
+        
         try:
-            session = db_connection.get_session()
-            position = session.query(Position).get(position_id)
+            # Use transaction context manager for atomic operations
+            with db_connection.get_transaction_session() as session:
+                # Use merge to attach position to current session
+                position = session.query(Position).filter_by(id=position_id).with_for_update().first()
+                
+                if not position or position.status != 'OPEN':
+                    self.logger.warning(f"Position {position_id} not found or not open")
+                    return False
+                
+                # Get current price
+                current_price = self._get_current_price(position.symbol)
+                if current_price is None:
+                    self.logger.error(f"Could not get current price for {position.symbol} - cannot close position safely")
+                    return False
+                
+                # Calculate PnL with all costs
+                pnl_info = self._calculate_pnl(position, current_price)
+                
+                # Calculate position value to free from used_balance
+                position_value = position.entry_price * position.quantity
+                
+                # Update position in database (within same transaction)
+                position.current_price = current_price
+                position.pnl = pnl_info['pnl']
+                position.pnl_percentage = pnl_info['pnl_percentage']
+                position.status = 'CLOSED'
+                position.closed_at = datetime.now()
+                
+                # Update wallet within same transaction
+                account_type = 'demo' if (self.trading_engine and self.trading_engine.demo_mode) else 'live'
+                wallet = session.query(Wallet).filter_by(account_type=account_type).with_for_update().first()
+                
+                if wallet:
+                    balance_before = wallet.available_balance
+                    
+                    # Unlock funds and apply PnL
+                    wallet.locked_balance = max(0, wallet.locked_balance - position_value)
+                    wallet.available_balance = wallet.available_balance + position_value + pnl_info['pnl']
+                    wallet.total_pnl += pnl_info['pnl']
+                    
+                    # Ensure available_balance is never negative
+                    if wallet.available_balance < 0:
+                        self.logger.error(f"Available balance would become negative ({wallet.available_balance:.2f}), clamping to 0")
+                        wallet.available_balance = 0
+                    
+                    balance_after = wallet.available_balance
+                    
+                    # Record wallet transaction
+                    transaction = WalletTransaction(
+                        account_type=account_type,
+                        transaction_type='position_close',
+                        amount=pnl_info['pnl'],  # Record net PnL
+                        balance_before=balance_before,
+                        balance_after=balance_after,
+                        position_id=position_id,
+                        description=f"Closed {position.side} {position.symbol}: {reason}, Net PnL=${pnl_info['pnl']:.2f} (Gross=${pnl_info['gross_pnl']:.2f}, Costs=${pnl_info['total_costs']:.2f})"
+                    )
+                    session.add(transaction)
+                    
+                    self.logger.info(f"Wallet updated: Freed ${position_value:.2f}, PnL=${pnl_info['pnl']:.2f}, "
+                                   f"Available: ${balance_before:.2f} → ${balance_after:.2f}")
+                
+                # Commit happens automatically via context manager
             
-            if not position or position.status != 'OPEN':
-                self.logger.warning(f"Position {position_id} not found or not open")
-                session.close()
-                return False
-            
-            # Get current price
-            current_price = self._get_current_price(position.symbol)
-            if current_price is None:
-                self.logger.error(f"Could not get current price for {position.symbol} - cannot close position safely")
-                session.close()
-                return False
-            
-            # Calculate PnL
-            pnl_info = self._calculate_pnl(position, current_price)
-            
-            # CRITICAL FIX: Calculate position value to free from used_balance
-            position_value = position.entry_price * position.quantity
-            
-            # Update position in database
-            position.current_price = current_price
-            position.pnl = pnl_info['pnl']
-            position.pnl_percentage = pnl_info['pnl_percentage']
-            position.status = 'CLOSED'
-            position.closed_at = datetime.now()
-            
-            session.commit()
-            session.close()
-            
-            # Remove from active monitoring
+            # Update in-memory state after successful commit
             if position_id in self.active_positions:
                 del self.active_positions[position_id]
             
-            # CRITICAL FIX: Free up the allocated balance when position closes
+            # Free up allocated balance in trading engine
             if self.trading_engine and hasattr(self.trading_engine, 'used_balance'):
                 self.trading_engine.used_balance = max(0, self.trading_engine.used_balance - position_value)
                 self.logger.info(f"Freed ${position_value:.2f} from used_balance. New used_balance: ${self.trading_engine.used_balance:.2f}")
-                
-                # Record wallet transaction for position close
-                if hasattr(self.trading_engine, '_update_wallet_balance'):
-                    # Amount includes original position value + PnL
-                    close_amount = position_value + pnl_info['pnl']
-                    self.trading_engine._update_wallet_balance(
-                        amount=position_value,  # Unlock original amount
-                        transaction_type='position_close',
-                        position_id=position_id,
-                        description=f"Closed {position.side} position for {position.symbol}, PnL: ${pnl_info['pnl']:.2f}"
-                    )
             
-            self.logger.info(f"Position {position_id} closed: {reason}, PnL: {pnl_info['pnl']:.4f} ({pnl_info['pnl_percentage']:.2f}%)")
+            # Mark as closed for idempotency
+            self._closed_positions.add(position_id)
+            
+            self.logger.info(f"✓ Position {position_id} closed: {reason}, Net PnL: ${pnl_info['pnl']:.4f} ({pnl_info['pnl_percentage']:.2f}%)")
             
             return True
             
         except Exception as e:
-            self.logger.error(f"Error closing position {position_id}: {e}")
+            self.logger.error(f"Error closing position {position_id}: {e}", exc_info=True)
             return False
     
     def emergency_close_position(self, position_id: int, signal_confidence: float) -> bool:
@@ -217,49 +289,47 @@ class PositionManager:
                     # System is paused, don't check positions
                     return
             
-            # Get position from database
-            session = db_connection.get_session()
-            position = session.query(Position).get(position_id)
-            
-            if not position or position.status != 'OPEN':
-                # Remove from active monitoring
-                if position_id in self.active_positions:
-                    del self.active_positions[position_id]
-                session.close()
-                return
-            
-            # Get current price
-            current_price = self._get_current_price(position.symbol)
-            if current_price is None:
-                # CRITICAL FIX: Don't process position if we can't get a valid price
-                # This prevents closing positions with incorrect/stale prices during network issues
-                self.logger.warning(f"Cannot get valid price for {position.symbol}, skipping position check to prevent incorrect closure")
-                session.close()
-                return
-            
-            # Debug logging for position status
-            if datetime.now().second % 30 == 0:  # Log every 30 seconds to avoid spam
-                self.logger.info(f"Monitoring position {position_id} ({position.symbol}): "
-                                f"Entry=${position.entry_price:.6f}, "
-                                f"Current=${current_price:.6f}, "
-                                f"SL=${position.current_sl:.6f}, "
-                                f"TP1=${position.tp1_price:.6f}")
-            
-            # Update current price
-            position.current_price = current_price
-            position.updated_at = datetime.now()
-            
-            # Check TP/SL triggers based on position side
-            if position.side == 'LONG':
-                self._check_long_position_triggers(position, current_price)
-            else:
-                self._check_short_position_triggers(position, current_price)
-            
-            session.commit()
-            session.close()
+            # Use transaction context for atomic updates
+            with db_connection.get_transaction_session() as session:
+                # Use merge to ensure position is bound to current session
+                position = session.query(Position).filter_by(id=position_id).first()
+                
+                if not position or position.status != 'OPEN':
+                    # Remove from active monitoring
+                    if position_id in self.active_positions:
+                        del self.active_positions[position_id]
+                    return
+                
+                # Get current price
+                current_price = self._get_current_price(position.symbol)
+                if current_price is None:
+                    # CRITICAL FIX: Don't process position if we can't get a valid price
+                    # This prevents closing positions with incorrect/stale prices during network issues
+                    self.logger.warning(f"Cannot get valid price for {position.symbol}, skipping position check to prevent incorrect closure")
+                    return
+                
+                # Debug logging for position status
+                if datetime.now().second % 30 == 0:  # Log every 30 seconds to avoid spam
+                    self.logger.info(f"Monitoring position {position_id} ({position.symbol}): "
+                                    f"Entry=${position.entry_price:.6f}, "
+                                    f"Current=${current_price:.6f}, "
+                                    f"SL=${position.current_sl:.6f}, "
+                                    f"TP1=${position.tp1_price:.6f}")
+                
+                # Update current price
+                position.current_price = current_price
+                position.updated_at = datetime.now()
+                
+                # Check TP/SL triggers based on position side
+                if position.side == 'LONG':
+                    self._check_long_position_triggers(position, current_price)
+                else:
+                    self._check_short_position_triggers(position, current_price)
+                
+                # Commit happens automatically via context manager
             
         except Exception as e:
-            self.logger.error(f"Error checking triggers for position {position_id}: {e}")
+            self.logger.error(f"Error checking triggers for position {position_id}: {e}", exc_info=True)
     
     def _check_long_position_triggers(self, position: Position, current_price: float):
         """Check triggers for LONG positions with user's specific TP/SL progression"""
@@ -285,10 +355,10 @@ class PositionManager:
             self.logger.info(f"TP2 hit for position {position.id} at +6%. SL moved to TP1: {position.tp1_price}, TP3 set to +10%: {position.tp3_price}")
         
         elif position.tp2_hit and not position.tp3_hit and current_price >= position.tp3_price:
-            # TP3 hit (+10%) - move SL to TP2 price and continue progression
+            # TP3 hit (+10%) - CLOSE POSITION IMMEDIATELY
             position.tp3_hit = True
-            position.current_sl = position.tp2_price  # Move SL to TP2 (+6%)
-            self.logger.info(f"TP3 hit for position {position.id} at +10%. SL moved to TP2: {position.tp2_price}")
+            self.logger.info(f"TP3 hit for position {position.id} at +10%. Closing position immediately.")
+            self.close_position(position.id, "TP3 (+10%) reached")
     
     def _check_short_position_triggers(self, position: Position, current_price: float):
         """Check triggers for SHORT positions with user's specific TP/SL progression"""
@@ -314,10 +384,10 @@ class PositionManager:
             self.logger.info(f"TP2 hit for position {position.id} at -6%. SL moved to TP1: {position.tp1_price}, TP3 set to -10%: {position.tp3_price}")
         
         elif position.tp2_hit and not position.tp3_hit and current_price <= position.tp3_price:
-            # TP3 hit (-10%) - move SL to TP2 price and continue progression
+            # TP3 hit (-10%) - CLOSE POSITION IMMEDIATELY
             position.tp3_hit = True
-            position.current_sl = position.tp2_price  # Move SL to TP2 (-6%)
-            self.logger.info(f"TP3 hit for position {position.id} at -10%. SL moved to TP2: {position.tp2_price}")
+            self.logger.info(f"TP3 hit for position {position.id} at -10%. Closing position immediately.")
+            self.close_position(position.id, "TP3 (-10%) reached")
     
     def _calculate_tp_sl_levels(self, entry_price: float, side: str) -> Dict[str, float]:
         """Calculate TP/SL levels based on entry price and side"""
@@ -489,3 +559,80 @@ class PositionManager:
             'total_unrealized_pnl': total_pnl,
             'positions': active_positions
         }
+    
+    def wallet_health_check(self) -> Dict[str, Any]:
+        """
+        Health check to verify wallet balance reconciliation
+        Ensures: sum(wallet_transactions.amount) + initial_balance == wallet.total_balance
+        """
+        try:
+            session = db_connection.get_session()
+            account_type = 'demo' if (self.trading_engine and self.trading_engine.demo_mode) else 'live'
+            
+            # Get wallet
+            wallet = session.query(Wallet).filter_by(account_type=account_type).first()
+            if not wallet:
+                session.close()
+                return {
+                    'status': 'ERROR',
+                    'message': f'Wallet not found for {account_type}'
+                }
+            
+            # Get all transactions
+            transactions = session.query(WalletTransaction).filter_by(account_type=account_type).all()
+            
+            # Calculate expected balance
+            initial_balance = TRADING_CONFIG['demo_balance'] if account_type == 'demo' else 0.0
+            transaction_sum = sum(t.amount for t in transactions)
+            expected_balance = initial_balance + transaction_sum
+            
+            # Check if balances match
+            balance_match = abs(expected_balance - wallet.total_balance) < 0.01  # Allow 1 cent difference
+            
+            # Calculate available_balance expectation
+            open_positions = session.query(Position).filter_by(status='OPEN').all()
+            locked_in_positions = sum(pos.entry_price * pos.quantity for pos in open_positions)
+            expected_available = wallet.total_balance - locked_in_positions
+            available_match = abs(expected_available - wallet.available_balance) < 0.01
+            
+            session.close()
+            
+            health_status = {
+                'status': 'HEALTHY' if (balance_match and available_match) else 'MISMATCH',
+                'account_type': account_type,
+                'wallet': {
+                    'total_balance': wallet.total_balance,
+                    'available_balance': wallet.available_balance,
+                    'locked_balance': wallet.locked_balance,
+                    'total_pnl': wallet.total_pnl
+                },
+                'reconciliation': {
+                    'initial_balance': initial_balance,
+                    'transaction_count': len(transactions),
+                    'transaction_sum': transaction_sum,
+                    'expected_total_balance': expected_balance,
+                    'balance_match': balance_match,
+                    'difference': wallet.total_balance - expected_balance
+                },
+                'positions': {
+                    'open_count': len(open_positions),
+                    'locked_in_positions': locked_in_positions,
+                    'expected_available': expected_available,
+                    'available_match': available_match,
+                    'available_difference': wallet.available_balance - expected_available
+                }
+            }
+            
+            if health_status['status'] == 'HEALTHY':
+                self.logger.info(f"✓ Wallet health check PASSED: Total=${wallet.total_balance:.2f}, Available=${wallet.available_balance:.2f}")
+            else:
+                self.logger.warning(f"⚠ Wallet health check FAILED: {health_status}")
+            
+            return health_status
+            
+        except Exception as e:
+            self.logger.error(f"Error in wallet health check: {e}", exc_info=True)
+            return {
+                'status': 'ERROR',
+                'message': str(e)
+            }
