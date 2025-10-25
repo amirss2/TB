@@ -39,8 +39,8 @@ TRADING_CONFIG = {
     'symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],  # Keep backward compatibility
     'analysis_symbols': [],  # Will be populated with CoinMarketCap top symbols available on CoinEx
     'coinmarketcap_limit': 1000,  # Number of top symbols to fetch from CoinMarketCap
-    'max_positions': 4,  # Maximum concurrent positions - STRICTLY ENFORCED
-    'risk_per_trade': 0.5,  # 50% of portfolio per trade as requested by user
+    'max_positions': 5,  # Maximum concurrent positions - STRICTLY ENFORCED
+    'risk_per_trade': 5.0,  # Fixed $5 per trade as requested by user
     'min_order_value': 5.0,  # Minimum order value in USD to prevent dust orders
     'use_coinmarketcap_symbols': True,  # Enable CoinMarketCap-based symbol selection
     'health_check_interval_minutes': 15,  # Health check every X minutes
