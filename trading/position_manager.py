@@ -333,61 +333,67 @@ class PositionManager:
     
     def _check_long_position_triggers(self, position: Position, current_price: float):
         """Check triggers for LONG positions with user's specific TP/SL progression"""
-        # Check Stop Loss
-        if current_price <= position.current_sl:
-            self.logger.info(f"SL triggered for position {position.id}: {current_price} <= {position.current_sl}")
-            self.close_position(position.id, "Stop Loss triggered")
-            return
         
-        # Check Take Profit levels and update trailing SL according to user specifications
+        # First, check Take Profit levels and update trailing SL
+        # This must happen BEFORE checking SL trigger so the updated SL takes effect immediately
         if not position.tp1_hit and current_price >= position.tp1_price:
             # TP1 hit (+3%) - move SL to entry price (breakeven) and set TP2 at +6%
             position.tp1_hit = True
             position.current_sl = position.entry_price  # Move SL to breakeven
             position.tp2_price = position.entry_price * (1 + 6.0 / 100)  # TP2 at +6% from entry
-            self.logger.info(f"TP1 hit for position {position.id} at +3%. SL moved to entry: {position.entry_price}, TP2 set to +6%: {position.tp2_price}")
+            self.logger.info(f"TP1 hit for position {position.id} at +3%. SL moved to entry (breakeven): ${position.entry_price:.6f}, TP2 set to +6%: ${position.tp2_price:.6f}")
         
         elif position.tp1_hit and not position.tp2_hit and current_price >= position.tp2_price:
             # TP2 hit (+6%) - move SL to TP1 price and set TP3 at +10%
             position.tp2_hit = True
             position.current_sl = position.tp1_price  # Move SL to TP1 (+3%)
             position.tp3_price = position.entry_price * (1 + 10.0 / 100)  # TP3 at +10% from entry
-            self.logger.info(f"TP2 hit for position {position.id} at +6%. SL moved to TP1: {position.tp1_price}, TP3 set to +10%: {position.tp3_price}")
+            self.logger.info(f"TP2 hit for position {position.id} at +6%. SL moved to TP1: ${position.tp1_price:.6f}, TP3 set to +10%: ${position.tp3_price:.6f}")
         
         elif position.tp2_hit and not position.tp3_hit and current_price >= position.tp3_price:
             # TP3 hit (+10%) - CLOSE POSITION IMMEDIATELY
             position.tp3_hit = True
             self.logger.info(f"TP3 hit for position {position.id} at +10%. Closing position immediately.")
             self.close_position(position.id, "TP3 (+10%) reached")
+            return  # Exit after closing position
+        
+        # Now check Stop Loss (after SL has been potentially updated by TP levels)
+        if current_price <= position.current_sl:
+            self.logger.info(f"SL triggered for position {position.id}: ${current_price:.6f} <= ${position.current_sl:.6f}")
+            self.close_position(position.id, "Stop Loss triggered")
+            return
     
     def _check_short_position_triggers(self, position: Position, current_price: float):
         """Check triggers for SHORT positions with user's specific TP/SL progression"""
-        # Check Stop Loss
-        if current_price >= position.current_sl:
-            self.logger.info(f"SL triggered for position {position.id}: {current_price} >= {position.current_sl}")
-            self.close_position(position.id, "Stop Loss triggered")
-            return
         
-        # Check Take Profit levels and update trailing SL according to user specifications
+        # First, check Take Profit levels and update trailing SL
+        # This must happen BEFORE checking SL trigger so the updated SL takes effect immediately
         if not position.tp1_hit and current_price <= position.tp1_price:
             # TP1 hit (-3%) - move SL to entry price (breakeven) and set TP2 at -6%
             position.tp1_hit = True
             position.current_sl = position.entry_price  # Move SL to breakeven
             position.tp2_price = position.entry_price * (1 - 6.0 / 100)  # TP2 at -6% from entry
-            self.logger.info(f"TP1 hit for position {position.id} at -3%. SL moved to entry: {position.entry_price}, TP2 set to -6%: {position.tp2_price}")
+            self.logger.info(f"TP1 hit for position {position.id} at -3%. SL moved to entry (breakeven): ${position.entry_price:.6f}, TP2 set to -6%: ${position.tp2_price:.6f}")
         
         elif position.tp1_hit and not position.tp2_hit and current_price <= position.tp2_price:
             # TP2 hit (-6%) - move SL to TP1 price and set TP3 at -10%
             position.tp2_hit = True
             position.current_sl = position.tp1_price  # Move SL to TP1 (-3%)
             position.tp3_price = position.entry_price * (1 - 10.0 / 100)  # TP3 at -10% from entry
-            self.logger.info(f"TP2 hit for position {position.id} at -6%. SL moved to TP1: {position.tp1_price}, TP3 set to -10%: {position.tp3_price}")
+            self.logger.info(f"TP2 hit for position {position.id} at -6%. SL moved to TP1: ${position.tp1_price:.6f}, TP3 set to -10%: ${position.tp3_price:.6f}")
         
         elif position.tp2_hit and not position.tp3_hit and current_price <= position.tp3_price:
             # TP3 hit (-10%) - CLOSE POSITION IMMEDIATELY
             position.tp3_hit = True
             self.logger.info(f"TP3 hit for position {position.id} at -10%. Closing position immediately.")
             self.close_position(position.id, "TP3 (-10%) reached")
+            return  # Exit after closing position
+        
+        # Now check Stop Loss (after SL has been potentially updated by TP levels)
+        if current_price >= position.current_sl:
+            self.logger.info(f"SL triggered for position {position.id}: ${current_price:.6f} >= ${position.current_sl:.6f}")
+            self.close_position(position.id, "Stop Loss triggered")
+            return
     
     def _calculate_tp_sl_levels(self, entry_price: float, side: str) -> Dict[str, float]:
         """Calculate TP/SL levels based on entry price and side"""
