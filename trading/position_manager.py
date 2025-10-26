@@ -332,23 +332,23 @@ class PositionManager:
             self.logger.error(f"Error checking triggers for position {position_id}: {e}", exc_info=True)
     
     def _check_long_position_triggers(self, position: Position, current_price: float):
-        """Check triggers for LONG positions with user's specific TP/SL progression"""
+        """Check triggers for LONG positions with trailing SL that moves to each TP level"""
         
         # First, check Take Profit levels and update trailing SL
-        # This must happen BEFORE checking SL trigger so the updated SL takes effect immediately
+        # SL moves TO the TP level that was hit (ladder strategy to lock profits)
         if not position.tp1_hit and current_price >= position.tp1_price:
-            # TP1 hit (+3%) - move SL to entry price (breakeven) and set TP2 at +6%
+            # TP1 hit (+3%) - move SL TO TP1 price to lock +3% profit
             position.tp1_hit = True
-            position.current_sl = position.entry_price  # Move SL to breakeven
+            position.current_sl = position.tp1_price  # Move SL TO TP1 level
             position.tp2_price = position.entry_price * (1 + 6.0 / 100)  # TP2 at +6% from entry
-            self.logger.info(f"TP1 hit for position {position.id} at +3%. SL moved to entry (breakeven): ${position.entry_price:.6f}, TP2 set to +6%: ${position.tp2_price:.6f}")
+            self.logger.info(f"TP1 hit for position {position.id} at +3%. SL moved TO TP1 level: ${position.tp1_price:.6f} (locks +3% profit), TP2 set to: ${position.tp2_price:.6f}")
         
         elif position.tp1_hit and not position.tp2_hit and current_price >= position.tp2_price:
-            # TP2 hit (+6%) - move SL to TP1 price and set TP3 at +10%
+            # TP2 hit (+6%) - move SL TO TP2 price to lock +6% profit
             position.tp2_hit = True
-            position.current_sl = position.tp1_price  # Move SL to TP1 (+3%)
+            position.current_sl = position.tp2_price  # Move SL TO TP2 level
             position.tp3_price = position.entry_price * (1 + 10.0 / 100)  # TP3 at +10% from entry
-            self.logger.info(f"TP2 hit for position {position.id} at +6%. SL moved to TP1: ${position.tp1_price:.6f}, TP3 set to +10%: ${position.tp3_price:.6f}")
+            self.logger.info(f"TP2 hit for position {position.id} at +6%. SL moved TO TP2 level: ${position.tp2_price:.6f} (locks +6% profit), TP3 set to: ${position.tp3_price:.6f}")
         
         elif position.tp2_hit and not position.tp3_hit and current_price >= position.tp3_price:
             # TP3 hit (+10%) - CLOSE POSITION IMMEDIATELY
@@ -364,23 +364,23 @@ class PositionManager:
             return
     
     def _check_short_position_triggers(self, position: Position, current_price: float):
-        """Check triggers for SHORT positions with user's specific TP/SL progression"""
+        """Check triggers for SHORT positions with trailing SL that moves to each TP level"""
         
         # First, check Take Profit levels and update trailing SL
-        # This must happen BEFORE checking SL trigger so the updated SL takes effect immediately
+        # SL moves TO the TP level that was hit (ladder strategy to lock profits)
         if not position.tp1_hit and current_price <= position.tp1_price:
-            # TP1 hit (-3%) - move SL to entry price (breakeven) and set TP2 at -6%
+            # TP1 hit (-3%) - move SL TO TP1 price to lock +3% profit
             position.tp1_hit = True
-            position.current_sl = position.entry_price  # Move SL to breakeven
+            position.current_sl = position.tp1_price  # Move SL TO TP1 level
             position.tp2_price = position.entry_price * (1 - 6.0 / 100)  # TP2 at -6% from entry
-            self.logger.info(f"TP1 hit for position {position.id} at -3%. SL moved to entry (breakeven): ${position.entry_price:.6f}, TP2 set to -6%: ${position.tp2_price:.6f}")
+            self.logger.info(f"TP1 hit for position {position.id} at -3%. SL moved TO TP1 level: ${position.tp1_price:.6f} (locks +3% profit), TP2 set to: ${position.tp2_price:.6f}")
         
         elif position.tp1_hit and not position.tp2_hit and current_price <= position.tp2_price:
-            # TP2 hit (-6%) - move SL to TP1 price and set TP3 at -10%
+            # TP2 hit (-6%) - move SL TO TP2 price to lock +6% profit
             position.tp2_hit = True
-            position.current_sl = position.tp1_price  # Move SL to TP1 (-3%)
+            position.current_sl = position.tp2_price  # Move SL TO TP2 level
             position.tp3_price = position.entry_price * (1 - 10.0 / 100)  # TP3 at -10% from entry
-            self.logger.info(f"TP2 hit for position {position.id} at -6%. SL moved to TP1: ${position.tp1_price:.6f}, TP3 set to -10%: ${position.tp3_price:.6f}")
+            self.logger.info(f"TP2 hit for position {position.id} at -6%. SL moved TO TP2 level: ${position.tp2_price:.6f} (locks +6% profit), TP3 set to: ${position.tp3_price:.6f}")
         
         elif position.tp2_hit and not position.tp3_hit and current_price <= position.tp3_price:
             # TP3 hit (-10%) - CLOSE POSITION IMMEDIATELY
@@ -393,6 +393,7 @@ class PositionManager:
         if current_price >= position.current_sl:
             self.logger.info(f"SL triggered for position {position.id}: ${current_price:.6f} >= ${position.current_sl:.6f}")
             self.close_position(position.id, "Stop Loss triggered")
+            return
             return
     
     def _calculate_tp_sl_levels(self, entry_price: float, side: str) -> Dict[str, float]:

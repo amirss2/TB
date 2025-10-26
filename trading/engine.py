@@ -726,12 +726,12 @@ class TradingEngine:
             self.logger.error(f"Error processing SELL signal for {symbol}: {e}")
     
     def _calculate_position_size(self, symbol: str, price: float) -> float:
-        """Calculate position size based on fixed $5 per trade"""
+        """Calculate position size based on fixed $100 per trade"""
         try:
             available_balance = self.demo_balance - self.used_balance if self.demo_mode else self._get_real_balance()
             
-            # Use fixed $5 per trade as requested by user
-            allocation_amount = TRADING_CONFIG['risk_per_trade']  # Fixed $5
+            # Use fixed $100 per trade as requested by user
+            allocation_amount = TRADING_CONFIG['risk_per_trade']  # Fixed $100
             
             # Check if we have enough balance
             if allocation_amount > available_balance:
