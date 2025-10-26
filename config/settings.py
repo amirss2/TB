@@ -33,16 +33,17 @@ DATABASE_CONFIG = {
 # Trading Configuration
 TRADING_CONFIG = {
     'timeframe': '4h',  # 4-hour timeframe as specified
-    'demo_balance': 100.0,  # Starting demo balance in USD
+    'demo_balance': 1000.0,  # Starting demo balance in USD
     'confidence_threshold': 0.7,  # Reduced from 0.9 to 0.7 to allow more signals
     'training_symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],  # Symbols for model training (kept as requested)
     'symbols': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT'],  # Keep backward compatibility
     'analysis_symbols': [],  # Will be populated with CoinMarketCap top symbols available on CoinEx
     'coinmarketcap_limit': 1000,  # Number of top symbols to fetch from CoinMarketCap
-    'max_positions': 4,  # Maximum concurrent positions - STRICTLY ENFORCED
-    'risk_per_trade': 0.5,  # 50% of portfolio per trade as requested by user
+    'max_positions': 5,  # Maximum concurrent positions - STRICTLY ENFORCED
+    'risk_per_trade': 100.0,  # Fixed $100 per trade as requested by user
     'min_order_value': 5.0,  # Minimum order value in USD to prevent dust orders
     'use_coinmarketcap_symbols': True,  # Enable CoinMarketCap-based symbol selection
+    'health_check_interval_minutes': 15,  # Health check every X minutes
     
     # Performance Enhancement Configuration
     'use_websocket': True,
